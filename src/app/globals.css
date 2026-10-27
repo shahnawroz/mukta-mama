@@ -2,4 +2,94 @@ html,
 body {
   margin: 0;
   padding: 0;
+  background: #f4f5fb;
+}
+
+.page {
+  max-width: 1100px;
+  margin: 0 auto;
+}
+
+.page-title {
+  margin: 0 0 4px !important;
+}
+
+.page-sub {
+  color: #64748b;
+  margin: 0 0 20px;
+}
+
+.soft-card {
+  border: 1px solid #eceef6 !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.stat-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: grid;
+  place-items: center;
+  font-size: 20px;
+}
+
+.login-bg {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  background: radial-gradient(circle at 20% 20%, #e0e7ff 0, transparent 45%),
+    radial-gradient(circle at 80% 80%, #fce7f3 0, transparent 45%), #f4f5fb;
+}
+
+.content {
+  padding: 24px 20px;
+}
+
+.mobile-bar {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  height: 56px;
+  padding: 0 12px;
+  background: #fff;
+  border-bottom: 1px solid #eceef6;
+}
+
+@media (max-width: 991px) {
+  .desktop-sider {
+    display: none !important;
+  }
+  .mobile-bar {
+    display: flex;
+  }
+  .content {
+    padding: 16px;
+  }
+}
+
+@media (max-width: 767px) {
+  .add-form {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .add-form .ant-form-item {
+    margin-inline-end: 0;
+    width: 100%;
+  }
+  .add-form .ant-input,
+  .add-form .ant-input-number,
+  .add-form .ant-segmented,
+  .add-form .ant-btn {
+    width: 100% !important;
+  }
+  .add-form .ant-segmented-group {
+    display: flex;
+  }
+  .add-form .ant-segmented-item {
+    flex: 1;
+  }
 }
