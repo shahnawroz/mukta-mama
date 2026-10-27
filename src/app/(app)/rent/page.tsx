@@ -72,6 +72,7 @@ export default function RentPage() {
       paid_at: new Date().toISOString(),
     });
     if (error) return message.error(error.message);
+    message.success(`${row.room_number} marked as paid`);
     load();
   }
 
@@ -81,6 +82,7 @@ export default function RentPage() {
       .delete()
       .eq("id", row.payment_id!);
     if (error) return message.error(error.message);
+    message.success(`${row.room_number} marked as due`);
     load();
   }
 

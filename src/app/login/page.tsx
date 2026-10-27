@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { Alert, Button, Card, Form, Input, Typography } from "antd";
+import { Alert, App, Button, Card, Form, Input, Typography } from "antd";
 import { HomeOutlined, LockOutlined, MailOutlined } from "@ant-design/icons";
 import { createClient } from "@/lib/supabase/client";
 
 export default function LoginPage() {
   const router = useRouter();
+  const { message } = App.useApp();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -20,6 +21,7 @@ export default function LoginPage() {
       setError(error.message);
       return;
     }
+    message.success("Logged in");
     router.replace("/");
     router.refresh();
   }

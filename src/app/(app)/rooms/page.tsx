@@ -51,6 +51,7 @@ export default function RoomsPage() {
     const { error } = await createClient().from("rooms").insert({ ...values, rent: values.rent ?? 0, advance: values.advance ?? 0 });
     setSaving(false);
     if (error) return message.error(error.message);
+    message.success(`${values.kind === "shop" ? "Shop" : "Room"} ${values.room_number} added`);
     form.resetFields(["room_number", "rent", "advance"]);
     inputRef.current?.focus();
     load();
@@ -63,12 +64,14 @@ export default function RoomsPage() {
       .update({ [field]: value })
       .eq("id", room.id);
     if (error) return message.error(error.message);
+    message.success(field === "rent" ? "Rent updated" : "Advance updated");
     load();
   }
 
   async function removeRoom(id: string) {
     const { error } = await createClient().from("rooms").delete().eq("id", id);
     if (error) return message.error(error.message);
+    message.success("Deleted");
     load();
   }
 
