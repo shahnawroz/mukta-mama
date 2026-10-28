@@ -14,6 +14,7 @@ import {
   Statistic,
   Table,
   Tag,
+  Tooltip,
   Typography,
 } from "antd";
 import dayjs, { type Dayjs } from "dayjs";
@@ -26,6 +27,7 @@ type Row = {
   rent: number;
   payment_id: string | null;
   paid_at: string | null;
+  paid_by: string | null;
 };
 
 export default function RentPage() {
@@ -44,7 +46,7 @@ export default function RentPage() {
       supabase.from("rooms").select("id, kind, room_number, rent")
         .order("kind", { ascending: false })
         .order("room_number"),
-      supabase.from("payments").select("id, room_id, paid_at").eq("month", monthKey),
+      supabase.from("payments").select("id, room_id, paid_at, paid_by").eq("month", monthKey),
     ]);
     const err = rooms.error ?? payments.error;
     if (err) message.error(err.message);
@@ -54,6 +56,7 @@ export default function RentPage() {
         ...r,
         payment_id: paid.get(r.id)?.id ?? null,
         paid_at: paid.get(r.id)?.paid_at ?? null,
+        paid_by: paid.get(r.id)?.paid_by ?? null,
       })),
     );
     setLoading(false);
@@ -65,7 +68,10 @@ export default function RentPage() {
   }, [load]);
 
   async function markPaid(row: Row) {
-    const { error } = await createClient().from("payments").insert({
+    const supabase = createClient();
+    const { data: auth } = await supabase.auth.getUser();
+    const { error } = await supabase.from("payments").insert({
+      paid_by: auth.user?.email ?? "admin",
       room_id: row.id,
       month: monthKey,
       amount: row.rent,
@@ -77,11 +83,23 @@ export default function RentPage() {
   }
 
   async function markDue(row: Row) {
-    const { error } = await createClient()
+    const supabase = createClient();
+    // Rent settled from advance: give that amount back to the room's advance.
+    const { data: payment } = await supabase
       .from("payments")
-      .delete()
-      .eq("id", row.payment_id!);
+      .select("advance_applied")
+      .eq("id", row.payment_id!)
+      .single();
+    const { error } = await supabase.from("payments").delete().eq("id", row.payment_id!);
     if (error) return message.error(error.message);
+    const applied = Number(payment?.advance_applied ?? 0);
+    if (applied > 0) {
+      const { data: room } = await supabase.from("rooms").select("advance").eq("id", row.id).single();
+      await supabase
+        .from("rooms")
+        .update({ advance: Number(room?.advance ?? 0) + applied })
+        .eq("id", row.id);
+    }
     message.success(`${row.room_number} marked as due`);
     load();
   }
@@ -160,6 +178,12 @@ export default function RentPage() {
             title: "Paid date",
             dataIndex: "paid_at",
             render: (v: string | null) => (v ? dayjs(v).format("DD MMM YYYY") : "-"),
+          },
+          {
+            title: "Paid by",
+            dataIndex: "paid_by",
+            render: (v: string | null, row: Row) =>
+              row.paid_at ? <Tooltip title={v}>Admin</Tooltip> : "-",
           },
           {
             title: "",

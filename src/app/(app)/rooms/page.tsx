@@ -9,18 +9,30 @@ import {
   Input,
   type InputRef,
   InputNumber,
+  Modal,
   Popconfirm,
+  Space,
   Segmented,
+  DatePicker,
   Tag,
   Table,
   Typography,
 } from "antd";
-import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, PlusOutlined, RollbackOutlined } from "@ant-design/icons";
+import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
 
 type Kind = "room" | "shop";
 type Room = { id: string; kind: Kind; room_number: string; rent: number; advance: number };
 type NewRoom = { kind: Kind; room_number: string; rent?: number; advance?: number };
+
+type ReturnValues = {
+  mode: "applied" | "refund";
+  amount: number;
+  return_date: Dayjs;
+  month: Dayjs;
+  note?: string;
+};
 
 export default function RoomsPage() {
   const { message } = App.useApp();
@@ -29,6 +41,9 @@ export default function RoomsPage() {
   const [saving, setSaving] = useState(false);
   const inputRef = useRef<InputRef>(null);
   const [form] = Form.useForm<NewRoom>();
+  const [returnRoom, setReturnRoom] = useState<Room | null>(null);
+  const [returnForm] = Form.useForm<ReturnValues>();
+  const returnMode = Form.useWatch("mode", returnForm);
 
   const load = useCallback(async () => {
     const { data, error } = await createClient()
@@ -48,7 +63,9 @@ export default function RoomsPage() {
 
   async function addRoom(values: NewRoom) {
     setSaving(true);
-    const { error } = await createClient().from("rooms").insert({ ...values, rent: values.rent ?? 0, advance: values.advance ?? 0 });
+    const { error } = await createClient()
+      .from("rooms")
+      .insert({ ...values, rent: values.rent ?? 0, advance: values.advance ?? 0 });
     setSaving(false);
     if (error) return message.error(error.message);
     message.success(`${values.kind === "shop" ? "Shop" : "Room"} ${values.room_number} added`);
@@ -65,6 +82,90 @@ export default function RoomsPage() {
       .eq("id", room.id);
     if (error) return message.error(error.message);
     message.success(field === "rent" ? "Rent updated" : "Advance updated");
+    load();
+  }
+
+  function openReturn(room: Room) {
+    const mode = room.kind === "room" ? "applied" : "refund";
+    returnForm.setFieldsValue({
+      mode,
+      amount: mode === "applied" ? Math.min(Number(room.advance), Number(room.rent)) : undefined,
+      return_date: dayjs(),
+      month: dayjs(),
+    });
+    setReturnRoom(room);
+  }
+
+  function onModeChange(mode: "applied" | "refund") {
+    const room = returnRoom!;
+    returnForm.setFieldValue(
+      "amount",
+      mode === "applied" ? Math.min(Number(room.advance), Number(room.rent)) : undefined,
+    );
+  }
+
+  async function returnAdvance(values: ReturnValues) {
+    const room = returnRoom!;
+    const supabase = createClient();
+    const label = `${room.kind === "shop" ? "Shop" : "Room"} ${room.room_number}`;
+    const applied = values.mode === "applied";
+    setSaving(true);
+
+    let paymentId: string | null = null;
+    if (applied) {
+      // Settle (part of) that month's rent from the advance; the rest is cash from the tenant.
+      const month = values.month.format("YYYY-MM-01");
+      const { data: auth } = await supabase.auth.getUser();
+      const { data: payment, error } = await supabase
+        .from("payments")
+        .insert({
+          room_id: room.id,
+          month,
+          amount: Number(room.rent) - values.amount,
+          advance_applied: values.amount,
+          paid_at: new Date().toISOString(),
+          paid_by: auth.user?.email ?? "admin",
+        })
+        .select("id")
+        .single();
+      if (error) {
+        setSaving(false);
+        return message.error(
+          error.code === "23505" ? `Rent for ${values.month.format("MMMM YYYY")} is already paid` : error.message,
+        );
+      }
+      paymentId = payment.id;
+    }
+
+    const { error: updateError } = await supabase
+      .from("rooms")
+      .update({ advance: Number(room.advance) - values.amount })
+      .eq("id", room.id);
+    if (updateError) {
+      if (paymentId) await supabase.from("payments").delete().eq("id", paymentId);
+      setSaving(false);
+      return message.error(updateError.message);
+    }
+
+    const { error: logError } = await supabase.from("advance_returns").insert({
+      room_id: room.id,
+      room_label: label,
+      kind: applied ? "applied" : "refund",
+      payment_id: paymentId,
+      amount: values.amount,
+      return_date: (applied ? dayjs() : values.return_date).format("YYYY-MM-DD"),
+      note: values.note?.trim() || (applied ? `Deducted from ${values.month.format("MMM YYYY")} rent` : null),
+    });
+    setSaving(false);
+    if (logError) message.error(logError.message);
+    else
+      message.success(
+        applied
+          ? `${values.amount.toLocaleString()} deducted from ${values.month.format("MMMM YYYY")} rent`
+          : `${values.amount.toLocaleString()} advance returned`,
+      );
+    setReturnRoom(null);
+    returnForm.resetFields();
     load();
   }
 
@@ -157,14 +258,91 @@ export default function RoomsPage() {
             {
               title: "",
               render: (_, room: Room) => (
-                <Popconfirm title="Delete this entry?" onConfirm={() => removeRoom(room.id)}>
-                  <Button danger type="text" size="small" icon={<DeleteOutlined />} />
-                </Popconfirm>
+                <Space>
+                  <Button
+                    size="small"
+                    icon={<RollbackOutlined />}
+                    disabled={Number(room.advance) <= 0}
+                    onClick={() => openReturn(room)}
+                  >
+                    Use / return advance
+                  </Button>
+                  <Popconfirm title="Delete this entry?" onConfirm={() => removeRoom(room.id)}>
+                    <Button danger type="text" size="small" icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </Space>
               ),
             },
           ]}
         />
       </Card>
+
+      <Modal
+        title={`Advance - ${returnRoom?.kind === "shop" ? "Shop" : "Room"} ${returnRoom?.room_number ?? ""}`}
+        open={!!returnRoom}
+        onCancel={() => setReturnRoom(null)}
+        onOk={() => returnForm.submit()}
+        okText={returnMode === "applied" ? "Deduct from rent" : "Return cash"}
+        confirmLoading={saving}
+        centered
+      >
+        <p>
+          Advance held: <b>{Number(returnRoom?.advance ?? 0).toLocaleString()}</b> · Rent:{" "}
+          <b>{Number(returnRoom?.rent ?? 0).toLocaleString()}</b>
+        </p>
+        <Form form={returnForm} layout="vertical" onFinish={returnAdvance} autoComplete="off">
+          <Form.Item name="mode">
+            <Segmented
+              block
+              onChange={onModeChange}
+              options={[
+                { label: "Deduct from rent", value: "applied" },
+                { label: "Return cash", value: "refund" },
+              ]}
+            />
+          </Form.Item>
+          {returnMode === "applied" ? (
+            <Form.Item
+              name="month"
+              label="Rent month to settle"
+              rules={[{ required: true }]}
+            >
+              <DatePicker picker="month" allowClear={false} style={{ width: "100%" }} />
+            </Form.Item>
+          ) : (
+            <Form.Item name="return_date" label="Date" rules={[{ required: true }]}>
+              <DatePicker allowClear={false} style={{ width: "100%" }} />
+            </Form.Item>
+          )}
+          <Form.Item
+            name="amount"
+            label={returnMode === "applied" ? "Amount deducted" : "Amount returned"}
+            extra={
+              returnMode === "applied"
+                ? "If this is less than the rent, the tenant pays the rest in cash."
+                : "Security money handed back. It does not change cash on hand."
+            }
+            rules={[
+              { required: true, message: "Enter amount" },
+              {
+                validator: (_, v: number | undefined) => {
+                  if (v == null) return Promise.resolve();
+                  if (v > Number(returnRoom?.advance ?? 0))
+                    return Promise.reject(new Error("More than the advance held"));
+                  if (returnMode === "applied" && v > Number(returnRoom?.rent ?? 0))
+                    return Promise.reject(new Error("More than the monthly rent"));
+                  return Promise.resolve();
+                },
+              },
+            ]}
+          >
+            <InputNumber min={1} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item name="note" label="Note (optional)">
+            <Input placeholder="e.g. Tenant moved out" />
+          </Form.Item>
+        </Form>
+      </Modal>
     </>
   );
 }

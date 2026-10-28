@@ -25,9 +25,23 @@ export async function proxy(request: NextRequest) {
 
   const {
     data: { user },
+    error,
   } = await supabase.auth.getUser();
 
   const isLogin = request.nextUrl.pathname === "/login";
+
+  // Stale session cookie (revoked or deleted user): drop it so the user can log in again.
+  if (error?.code === "refresh_token_not_found") {
+    const res = isLogin
+      ? NextResponse.next({ request })
+      : NextResponse.redirect(new URL("/login", request.url));
+    request.cookies
+      .getAll()
+      .filter(({ name }) => name.startsWith("sb-"))
+      .forEach(({ name }) => res.cookies.delete(name));
+    return res;
+  }
+
   if (!user && !isLogin) {
     return NextResponse.redirect(new URL("/login", request.url));
   }

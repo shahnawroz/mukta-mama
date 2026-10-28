@@ -9,7 +9,10 @@ import {
   DashboardOutlined,
   HomeOutlined,
   LogoutOutlined,
+  BankOutlined,
   MenuOutlined,
+  MinusCircleOutlined,
+  ThunderboltOutlined,
   WalletOutlined,
 } from "@ant-design/icons";
 import { createClient } from "@/lib/supabase/client";
@@ -29,6 +32,17 @@ function NavMenu({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
           label: <Link href="/rooms">Rooms & Shops</Link>,
         },
         { key: "/rent", icon: <WalletOutlined />, label: <Link href="/rent">Rent</Link> },
+        { key: "/income", icon: <BankOutlined />, label: <Link href="/income">Income</Link> },
+        {
+          key: "/expenses",
+          icon: <MinusCircleOutlined />,
+          label: <Link href="/expenses">Expenses</Link>,
+        },
+        {
+          key: "/electricity",
+          icon: <ThunderboltOutlined />,
+          label: <Link href="/electricity">Electricity</Link>,
+        },
       ]}
     />
   );
