@@ -4,25 +4,21 @@ import { useCallback, useEffect, useState } from "react";
 import {
   App,
   Button,
-  Card,
-  Col,
   DatePicker,
+  Empty,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
-  Row,
-  Space,
-  Statistic,
-  Table,
+  Skeleton,
   Tabs,
   Tag,
-  Typography,
 } from "antd";
 import { BankOutlined, DeleteOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import PageHeader from "@/components/PageHeader";
 
 type Collection = {
   id: string;
@@ -54,6 +50,10 @@ type MonthRow = {
 type TransferValues = { amount: number; transfer_date: Dayjs; note?: string };
 
 const fmt = (v: number | string) => Number(v).toLocaleString();
+
+function EmptyList({ text }: { text: string }) {
+  return <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={text} />;
+}
 
 export default function IncomePage() {
   const { message } = App.useApp();
@@ -173,6 +173,142 @@ export default function IncomePage() {
     load();
   }
 
+  const tabs = [
+    {
+      key: "monthly",
+      label: "Months",
+      children:
+        monthly.length === 0 ? (
+          <EmptyList text="No income yet. Mark rent as paid on the Rent page." />
+        ) : (
+          <div className="row-list">
+            {monthly.map((m) => (
+              <div key={m.key} className="month-card">
+                <div className="month-head">
+                  <b>{m.month}</b>
+                  <span>
+                    <span style={{ color: "#64748b", fontSize: 12 }}>Cash at month end </span>
+                    <b style={{ fontSize: 17 }}>{fmt(m.closing)}</b>
+                  </span>
+                </div>
+                <div className="month-grid">
+                  <div>
+                    <span>Opening</span>
+                    {fmt(m.opening)}
+                  </div>
+                  <div>
+                    <span>Collected</span>
+                    <b style={{ color: "#16a34a" }}>+{fmt(m.collected)}</b>
+                  </div>
+                  <div>
+                    <span>To bank</span>
+                    <b>-{fmt(m.bank)}</b>
+                  </div>
+                  <div>
+                    <span>Expenses</span>
+                    <b style={{ color: "#e11d48" }}>-{fmt(m.spent)}</b>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ),
+    },
+    {
+      key: "collections",
+      label: "Collected",
+      children:
+        collections.length === 0 ? (
+          <EmptyList text="No rent collected yet" />
+        ) : (
+          <div className="row-list">
+            {collections.map((c) => (
+              <div key={c.id} className="row-card">
+                <div>
+                  <div className="row-title">
+                    {c.rooms && (
+                      <Tag color={c.rooms.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                        {c.rooms.kind === "shop" ? "Shop" : "Room"}
+                      </Tag>
+                    )}
+                    {c.rooms?.room_number ?? "-"}
+                  </div>
+                  <div className="row-sub">
+                    {dayjs(c.month).format("MMM YYYY")} rent - collected{" "}
+                    {dayjs(c.paid_at).format("DD MMM YYYY")}
+                    {Number(c.advance_applied) > 0 && ` - ${fmt(c.advance_applied)} from advance`}
+                  </div>
+                </div>
+                <div className="row-amount in">+{fmt(rentOf(c))}</div>
+              </div>
+            ))}
+          </div>
+        ),
+    },
+    {
+      key: "transfers",
+      label: "Bank",
+      children:
+        transfers.length === 0 ? (
+          <EmptyList text="No bank transfers yet" />
+        ) : (
+          <div className="row-list">
+            {transfers.map((t) => (
+              <div key={t.id} className="row-card">
+                <div>
+                  <div className="row-title">{dayjs(t.transfer_date).format("DD MMM YYYY")}</div>
+                  <div className="row-sub">{t.note ?? "Transfer to bank"}</div>
+                </div>
+                <div className="row-side">
+                  <div className="row-amount">{fmt(t.amount)}</div>
+                  <Popconfirm
+                    title="Delete this transfer? The amount goes back to cash."
+                    onConfirm={() => removeTransfer(t.id)}
+                  >
+                    <Button type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </div>
+              </div>
+            ))}
+          </div>
+        ),
+    },
+    {
+      key: "returns",
+      label: "Advance",
+      children:
+        returns.length === 0 ? (
+          <EmptyList text="No advance used or returned yet" />
+        ) : (
+          <div className="row-list">
+            {returns.map((r) => (
+              <div key={r.id} className="row-card">
+                <div>
+                  <div className="row-title">
+                    {r.room_label}
+                    {r.kind === "applied" ? (
+                      <Tag color="gold" style={{ margin: 0 }}>
+                        Deducted from rent
+                      </Tag>
+                    ) : (
+                      <Tag color="green" style={{ margin: 0 }}>
+                        Cash refund
+                      </Tag>
+                    )}
+                  </div>
+                  <div className="row-sub">
+                    {dayjs(r.return_date).format("DD MMM YYYY")}
+                    {r.note && ` - ${r.note}`}
+                  </div>
+                </div>
+                <div className="row-amount">{fmt(r.amount)}</div>
+              </div>
+            ))}
+          </div>
+        ),
+    },
+  ];
+
   const amountRules = [
     { required: true, message: "Enter amount" },
     {
@@ -185,189 +321,44 @@ export default function IncomePage() {
 
   return (
     <>
-      <Typography.Title level={3} className="page-title">
-        Income
-      </Typography.Title>
-      <p className="page-sub">Rent collected, cash on hand and bank transfers. Add expenses on the Expenses page.</p>
-
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} lg={6}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="Total collected" value={collected} />
-          </Card>
-        </Col>
-        <Col xs={12} lg={6}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="Expenses" value={spent} styles={{ content: { color: "#e11d48" } }} />
-          </Card>
-        </Col>
-        <Col xs={12} lg={6}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic
-              title="Cash on hand"
-              value={cash}
-              styles={{ content: { color: "#16a34a" } }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} lg={6}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="In bank" value={inBank} styles={{ content: { color: "#4f46e5" } }} />
-          </Card>
-        </Col>
-      </Row>
-
-      <Card
-        className="soft-card"
+      <PageHeader
+        title="Income"
+        subtitle="Rent collected, cash on hand and bank transfers."
         extra={
-          <Space wrap>
-            <Button
-              type="primary"
-              icon={<BankOutlined />}
-              disabled={cash <= 0}
-              onClick={() => setOpen(true)}
-            >
-              Transfer to bank
-            </Button>
-          </Space>
+          <Button
+            type="primary"
+            size="large"
+            icon={<BankOutlined />}
+            disabled={cash <= 0}
+            onClick={() => setOpen(true)}
+          >
+            Transfer to bank
+          </Button>
         }
-        title="History"
-      >
-        <Tabs
-          items={[
-            {
-              key: "monthly",
-              label: "Monthly summary",
-              children: (
-                <Table
-                  rowKey="key"
-                  loading={loading}
-                  dataSource={monthly}
-                  pagination={{ pageSize: 12, hideOnSinglePage: true }}
-                  scroll={{ x: true }}
-                  columns={[
-                    { title: "Month", dataIndex: "month" },
-                    { title: "Opening cash", dataIndex: "opening", render: fmt },
-                    { title: "Rent collected", dataIndex: "collected", render: fmt },
-                    { title: "To bank", dataIndex: "bank", render: fmt },
-                    { title: "Expenses", dataIndex: "spent", render: fmt },
-                    {
-                      title: "Cash on hand (month end)",
-                      dataIndex: "closing",
-                      render: (v: number) => <b>{fmt(v)}</b>,
-                    },
-                  ]}
-                />
-              ),
-            },
-            {
-              key: "collections",
-              label: `Collections (${collections.length})`,
-              children: (
-                <Table
-                  rowKey="id"
-                  loading={loading}
-                  dataSource={collections}
-                  pagination={{ pageSize: 20, hideOnSinglePage: true }}
-                  scroll={{ x: true }}
-                  columns={[
-                    {
-                      title: "Collected on",
-                      dataIndex: "paid_at",
-                      render: (v: string) => dayjs(v).format("DD MMM YYYY"),
-                    },
-                    {
-                      title: "Room / Shop",
-                      dataIndex: "rooms",
-                      render: (r: Collection["rooms"]) =>
-                        r ? (
-                          <Tag color={r.kind === "shop" ? "purple" : "blue"}>
-                            {r.kind === "shop" ? "Shop" : "Room"} {r.room_number}
-                          </Tag>
-                        ) : (
-                          "-"
-                        ),
-                    },
-                    {
-                      title: "For month",
-                      dataIndex: "month",
-                      render: (v: string) => dayjs(v).format("MMM YYYY"),
-                    },
-                    { title: "Cash received", dataIndex: "amount", render: fmt },
-                    {
-                      title: "From advance",
-                      dataIndex: "advance_applied",
-                      render: (v: number) => (Number(v) > 0 ? fmt(v) : "-"),
-                    },
-                  ]}
-                />
-              ),
-            },
-            {
-              key: "returns",
-              label: `Advance used / returned (${returns.length})`,
-              children: (
-                <Table
-                  rowKey="id"
-                  loading={loading}
-                  dataSource={returns}
-                  pagination={{ pageSize: 20, hideOnSinglePage: true }}
-                  scroll={{ x: true }}
-                  columns={[
-                    {
-                      title: "Date",
-                      dataIndex: "return_date",
-                      render: (v: string) => dayjs(v).format("DD MMM YYYY"),
-                    },
-                    { title: "Room / Shop", dataIndex: "room_label" },
-                    {
-                      title: "Type",
-                      dataIndex: "kind",
-                      render: (k: AdvanceReturn["kind"]) =>
-                        k === "applied" ? <Tag color="gold">Deducted from rent</Tag> : <Tag color="green">Cash refund</Tag>,
-                    },
-                    { title: "Amount", dataIndex: "amount", render: fmt },
-                    { title: "Note", dataIndex: "note", render: (v: string | null) => v ?? "-" },
-                  ]}
-                />
-              ),
-            },
-            {
-              key: "transfers",
-              label: `Bank transfers (${transfers.length})`,
-              children: (
-                <Table
-                  rowKey="id"
-                  loading={loading}
-                  dataSource={transfers}
-                  pagination={{ pageSize: 20, hideOnSinglePage: true }}
-                  scroll={{ x: true }}
-                  columns={[
-                    {
-                      title: "Date",
-                      dataIndex: "transfer_date",
-                      render: (v: string) => dayjs(v).format("DD MMM YYYY"),
-                    },
-                    { title: "Amount", dataIndex: "amount", render: fmt },
-                    { title: "Note", dataIndex: "note", render: (v: string | null) => v ?? "-" },
-                    {
-                      title: "",
-                      render: (_, t: Transfer) => (
-                        <Popconfirm
-                          title="Delete this transfer? The amount goes back to cash."
-                          onConfirm={() => removeTransfer(t.id)}
-                        >
-                          <Button danger type="text" size="small" icon={<DeleteOutlined />} />
-                        </Popconfirm>
-                      ),
-                    },
-                  ]}
-                />
-              ),
-            },
-          ]}
-        />
-      </Card>
+      />
+
+      <div className="hero">
+        <div className="hero-label">Cash on hand</div>
+        <div className="hero-amount">{loading ? "..." : fmt(cash)}</div>
+        <div className="hero-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+          <div className="hero-mini">
+            <span>Total collected</span>
+            <b>{fmt(collected)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>Expenses</span>
+            <b>{fmt(spent)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>In bank</span>
+            <b>{fmt(inBank)}</b>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ marginTop: 20 }}>
+        {loading ? <Skeleton active /> : <Tabs items={tabs} />}
+      </div>
 
       <Modal
         title="Transfer to bank"
@@ -389,7 +380,7 @@ export default function IncomePage() {
           autoComplete="off"
         >
           <Form.Item name="amount" label="Amount" rules={amountRules}>
-            <InputNumber min={1} style={{ width: "100%" }} autoFocus />
+            <InputNumber size="large" min={1} style={{ width: "100%" }} autoFocus />
           </Form.Item>
           <Form.Item name="transfer_date" label="Date" rules={[{ required: true }]}>
             <DatePicker allowClear={false} style={{ width: "100%" }} />
@@ -399,7 +390,6 @@ export default function IncomePage() {
           </Form.Item>
         </Form>
       </Modal>
-
     </>
   );
 }

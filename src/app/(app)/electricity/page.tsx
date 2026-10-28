@@ -6,22 +6,22 @@ import {
   Button,
   Card,
   DatePicker,
+  Empty,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
   Select,
-  Statistic,
-  Table,
+  Skeleton,
   Tag,
-  Typography,
   Upload,
   type UploadFile,
 } from "antd";
 import { DeleteOutlined, EyeOutlined, PlusOutlined, UploadOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
 type Unit = { id: string; kind: Kind; room_number: string };
@@ -42,6 +42,7 @@ type FormValues = {
 };
 
 const MAX_IMAGE_MB = 5;
+const fmt = (v: number) => Number(v).toLocaleString();
 
 export default function ElectricityPage() {
   const { message } = App.useApp();
@@ -50,6 +51,7 @@ export default function ElectricityPage() {
   const [filterUnit, setFilterUnit] = useState<string>();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
   const [preview, setPreview] = useState<string | null>(null);
   const [form] = Form.useForm<FormValues>();
 
@@ -75,10 +77,7 @@ export default function ElectricityPage() {
     load();
   }, [load]);
 
-  const unitLabel = (id: string) => {
-    const u = units.find((x) => x.id === id);
-    return u ? `${u.kind === "shop" ? "Shop" : "Room"} ${u.room_number}` : "-";
-  };
+  const unitOf = (id: string) => units.find((x) => x.id === id);
 
   // Prefill the meter number from the last deposit for this room/shop.
   function onUnitChange(roomId: string) {
@@ -119,8 +118,8 @@ export default function ElectricityPage() {
       return message.error(error.message);
     }
     message.success("Electricity deposit added");
-    form.resetFields(["amount", "invoice"]);
-    form.setFieldValue("deposit_date", dayjs());
+    setOpen(false);
+    form.resetFields();
     load();
   }
 
@@ -148,63 +147,32 @@ export default function ElectricityPage() {
 
   return (
     <>
-      <Typography.Title level={3} className="page-title">
-        Electricity
-      </Typography.Title>
-      <p className="page-sub">Record prepaid meter deposits with the invoice photo.</p>
-
-      <Card className="soft-card" title="Add deposit" style={{ marginBottom: 16 }}>
-        <Form
-          form={form}
-          layout="inline"
-          className="add-form"
-          style={{ rowGap: 12 }}
-          onFinish={addDeposit}
-          initialValues={{ deposit_date: dayjs() }}
-          autoComplete="off"
-        >
-          <Form.Item name="room_id" rules={[{ required: true, message: "Select room / shop" }]}>
-            <Select
-              showSearch={{ optionFilterProp: "label" }}
-              placeholder="Room / shop"
-              options={unitOptions}
-              onChange={onUnitChange}
-              style={{ width: 200 }}
-            />
-          </Form.Item>
-          <Form.Item name="meter_number" rules={[{ required: true, message: "Meter number" }]}>
-            <Input placeholder="Meter number" style={{ width: 200 }} />
-          </Form.Item>
-          <Form.Item name="amount" rules={[{ required: true, message: "Amount" }]}>
-            <InputNumber placeholder="Deposit amount" min={0} style={{ width: 180 }} />
-          </Form.Item>
-          <Form.Item name="deposit_date" rules={[{ required: true, message: "Date" }]}>
-            <DatePicker allowClear={false} style={{ width: 160 }} />
-          </Form.Item>
-          <Form.Item
-            name="invoice"
-            valuePropName="fileList"
-            getValueFromEvent={(e) => (Array.isArray(e) ? e : e?.fileList)}
-          >
-            <Upload
-              accept="image/*"
-              maxCount={1}
-              listType="picture"
-              beforeUpload={() => false}
-            >
-              <Button icon={<UploadOutlined />}>Invoice image</Button>
-            </Upload>
-          </Form.Item>
-          <Button type="primary" htmlType="submit" loading={saving} icon={<PlusOutlined />}>
-            Add
-          </Button>
-        </Form>
-      </Card>
-
-      <Card
-        className="soft-card"
-        title={`Deposits (${shown.length})`}
+      <PageHeader
+        title="Electricity"
+        subtitle="Record prepaid meter deposits with the invoice photo."
         extra={
+          <Button
+            type="primary"
+            size="large"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              form.setFieldsValue({ deposit_date: dayjs() });
+              setOpen(true);
+            }}
+          >
+            Add deposit
+          </Button>
+        }
+      />
+
+      <Card className="soft-card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ color: "#64748b", fontSize: 13 }}>
+              Total deposited{filterUnit ? ` - ${unitOptions.find((o) => o.value === filterUnit)?.label}` : ""}
+            </div>
+            <div style={{ fontSize: 28, fontWeight: 700 }}>{loading ? "..." : fmt(total)}</div>
+          </div>
           <Select
             allowClear
             showSearch={{ optionFilterProp: "label" }}
@@ -212,57 +180,99 @@ export default function ElectricityPage() {
             options={unitOptions}
             value={filterUnit}
             onChange={setFilterUnit}
-            style={{ width: 180 }}
+            style={{ width: 200 }}
           />
-        }
-      >
-        <Statistic title="Total deposited" value={total} style={{ marginBottom: 16 }} />
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={shown}
-          pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: true }}
-          columns={[
-            {
-              title: "Date",
-              dataIndex: "deposit_date",
-              render: (v: string) => dayjs(v).format("DD MMM YYYY"),
-            },
-            {
-              title: "Room / Shop",
-              dataIndex: "room_id",
-              render: (id: string) => <Tag>{unitLabel(id)}</Tag>,
-            },
-            { title: "Meter no.", dataIndex: "meter_number" },
-            {
-              title: "Amount",
-              dataIndex: "amount",
-              render: (v: number) => Number(v).toLocaleString(),
-            },
-            {
-              title: "Invoice",
-              dataIndex: "invoice_path",
-              render: (path: string | null) =>
-                path ? (
-                  <Button size="small" icon={<EyeOutlined />} onClick={() => viewInvoice(path)}>
-                    View
-                  </Button>
-                ) : (
-                  "-"
-                ),
-            },
-            {
-              title: "",
-              render: (_, d: Deposit) => (
-                <Popconfirm title="Delete this deposit?" onConfirm={() => removeDeposit(d)}>
-                  <Button danger type="text" size="small" icon={<DeleteOutlined />} />
-                </Popconfirm>
-              ),
-            },
-          ]}
-        />
+        </div>
       </Card>
+
+      {loading ? (
+        <Card className="soft-card">
+          <Skeleton active />
+        </Card>
+      ) : shown.length === 0 ? (
+        <Card className="soft-card">
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="No deposits yet" />
+        </Card>
+      ) : (
+        <div className="row-list">
+          {shown.map((d) => {
+            const u = unitOf(d.room_id);
+            return (
+              <div key={d.id} className="row-card">
+                <div>
+                  <div className="row-title">
+                    {u && (
+                      <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                        {u.kind === "shop" ? "Shop" : "Room"}
+                      </Tag>
+                    )}
+                    {u?.room_number ?? "-"}
+                  </div>
+                  <div className="row-sub">
+                    Meter {d.meter_number} - {dayjs(d.deposit_date).format("DD MMM YYYY")}
+                  </div>
+                </div>
+                <div className="row-side">
+                  <div className="row-amount">{fmt(d.amount)}</div>
+                  {d.invoice_path && (
+                    <Button
+                      type="text"
+                      icon={<EyeOutlined />}
+                      onClick={() => viewInvoice(d.invoice_path!)}
+                      aria-label="View invoice"
+                    />
+                  )}
+                  <Popconfirm title="Delete this deposit?" onConfirm={() => removeDeposit(d)}>
+                    <Button type="text" danger icon={<DeleteOutlined />} />
+                  </Popconfirm>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      <Modal title="Add electricity deposit" open={open} onCancel={() => setOpen(false)} footer={null} centered destroyOnHidden>
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={addDeposit}
+          initialValues={{ deposit_date: dayjs() }}
+          autoComplete="off"
+        >
+          <Form.Item name="room_id" label="Room / shop" rules={[{ required: true, message: "Select a room or shop" }]}>
+            <Select
+              size="large"
+              showSearch={{ optionFilterProp: "label" }}
+              placeholder="Select"
+              options={unitOptions}
+              onChange={onUnitChange}
+            />
+          </Form.Item>
+          <Form.Item name="meter_number" label="Meter number" rules={[{ required: true, message: "Enter the meter number" }]}>
+            <Input size="large" />
+          </Form.Item>
+          <Form.Item name="amount" label="Deposit amount" rules={[{ required: true, message: "Enter amount" }]}>
+            <InputNumber size="large" min={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item name="deposit_date" label="Deposit date" rules={[{ required: true }]}>
+            <DatePicker allowClear={false} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item
+            name="invoice"
+            label="Invoice image (optional)"
+            valuePropName="fileList"
+            getValueFromEvent={(e) => (Array.isArray(e) ? e : e?.fileList)}
+          >
+            <Upload accept="image/*" maxCount={1} listType="picture" beforeUpload={() => false}>
+              <Button icon={<UploadOutlined />}>Choose image</Button>
+            </Upload>
+          </Form.Item>
+          <Button type="primary" size="large" htmlType="submit" loading={saving} block>
+            Add
+          </Button>
+        </Form>
+      </Modal>
 
       <Modal open={!!preview} footer={null} onCancel={() => setPreview(null)} title="Invoice" centered>
         {/* eslint-disable-next-line @next/next/no-img-element */}

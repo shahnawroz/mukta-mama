@@ -5,27 +5,34 @@ import {
   App,
   Button,
   Card,
+  DatePicker,
+  Empty,
   Form,
   Input,
   type InputRef,
   InputNumber,
   Modal,
   Popconfirm,
-  Space,
   Segmented,
-  DatePicker,
+  Skeleton,
   Tag,
-  Table,
-  Typography,
+  Tooltip,
 } from "antd";
-import { DeleteOutlined, PlusOutlined, RollbackOutlined } from "@ant-design/icons";
+import {
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+  RollbackOutlined,
+  SearchOutlined,
+} from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
 type Room = { id: string; kind: Kind; room_number: string; rent: number; advance: number };
 type NewRoom = { kind: Kind; room_number: string; rent?: number; advance?: number };
-
+type EditValues = { rent: number; advance: number };
 type ReturnValues = {
   mode: "applied" | "refund";
   amount: number;
@@ -34,13 +41,25 @@ type ReturnValues = {
   note?: string;
 };
 
+const fmt = (v: number) => Number(v).toLocaleString();
+const labelOf = (r: { kind: Kind; room_number: string }) =>
+  `${r.kind === "shop" ? "Shop" : "Room"} ${r.room_number}`;
+
 export default function RoomsPage() {
   const { message } = App.useApp();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const inputRef = useRef<InputRef>(null);
+  const [kind, setKind] = useState<"all" | Kind>("all");
+  const [search, setSearch] = useState("");
+
+  const [addOpen, setAddOpen] = useState(false);
+  const numberRef = useRef<InputRef>(null);
   const [form] = Form.useForm<NewRoom>();
+
+  const [editRoom, setEditRoom] = useState<Room | null>(null);
+  const [editForm] = Form.useForm<EditValues>();
+
   const [returnRoom, setReturnRoom] = useState<Room | null>(null);
   const [returnForm] = Form.useForm<ReturnValues>();
   const returnMode = Form.useWatch("mode", returnForm);
@@ -67,21 +86,33 @@ export default function RoomsPage() {
       .from("rooms")
       .insert({ ...values, rent: values.rent ?? 0, advance: values.advance ?? 0 });
     setSaving(false);
-    if (error) return message.error(error.message);
-    message.success(`${values.kind === "shop" ? "Shop" : "Room"} ${values.room_number} added`);
+    if (error) {
+      return message.error(
+        error.code === "23505" ? `${labelOf(values)} already exists` : error.message,
+      );
+    }
+    message.success(`${labelOf(values)} added`);
     form.resetFields(["room_number", "rent", "advance"]);
-    inputRef.current?.focus();
+    numberRef.current?.focus();
     load();
   }
 
-  async function updateField(room: Room, field: "rent" | "advance", value: number) {
-    if (Number.isNaN(value) || value === Number(room[field])) return;
+  function openEdit(room: Room) {
+    editForm.setFieldsValue({ rent: Number(room.rent), advance: Number(room.advance) });
+    setEditRoom(room);
+  }
+
+  async function saveEdit(values: EditValues) {
+    const room = editRoom!;
+    setSaving(true);
     const { error } = await createClient()
       .from("rooms")
-      .update({ [field]: value })
+      .update({ rent: values.rent ?? 0, advance: values.advance ?? 0 })
       .eq("id", room.id);
+    setSaving(false);
     if (error) return message.error(error.message);
-    message.success(field === "rent" ? "Rent updated" : "Advance updated");
+    message.success(`${labelOf(room)} updated`);
+    setEditRoom(null);
     load();
   }
 
@@ -107,7 +138,6 @@ export default function RoomsPage() {
   async function returnAdvance(values: ReturnValues) {
     const room = returnRoom!;
     const supabase = createClient();
-    const label = `${room.kind === "shop" ? "Shop" : "Room"} ${room.room_number}`;
     const applied = values.mode === "applied";
     setSaving(true);
 
@@ -131,7 +161,9 @@ export default function RoomsPage() {
       if (error) {
         setSaving(false);
         return message.error(
-          error.code === "23505" ? `Rent for ${values.month.format("MMMM YYYY")} is already paid` : error.message,
+          error.code === "23505"
+            ? `Rent for ${values.month.format("MMMM YYYY")} is already paid`
+            : error.message,
         );
       }
       paymentId = payment.id;
@@ -149,136 +181,207 @@ export default function RoomsPage() {
 
     const { error: logError } = await supabase.from("advance_returns").insert({
       room_id: room.id,
-      room_label: label,
+      room_label: labelOf(room),
       kind: applied ? "applied" : "refund",
       payment_id: paymentId,
       amount: values.amount,
       return_date: (applied ? dayjs() : values.return_date).format("YYYY-MM-DD"),
-      note: values.note?.trim() || (applied ? `Deducted from ${values.month.format("MMM YYYY")} rent` : null),
+      note:
+        values.note?.trim() ||
+        (applied ? `Deducted from ${values.month.format("MMM YYYY")} rent` : null),
     });
     setSaving(false);
     if (logError) message.error(logError.message);
     else
       message.success(
         applied
-          ? `${values.amount.toLocaleString()} deducted from ${values.month.format("MMMM YYYY")} rent`
-          : `${values.amount.toLocaleString()} advance returned`,
+          ? `${fmt(values.amount)} deducted from ${values.month.format("MMMM YYYY")} rent`
+          : `${fmt(values.amount)} advance returned`,
       );
     setReturnRoom(null);
     returnForm.resetFields();
     load();
   }
 
-  async function removeRoom(id: string) {
-    const { error } = await createClient().from("rooms").delete().eq("id", id);
+  async function removeRoom(room: Room) {
+    const { error } = await createClient().from("rooms").delete().eq("id", room.id);
     if (error) return message.error(error.message);
-    message.success("Deleted");
+    message.success(`${labelOf(room)} deleted`);
     load();
   }
 
+  const q = search.trim().toLowerCase();
+  const visible = rooms
+    .filter((r) => kind === "all" || r.kind === kind)
+    .filter((r) => !q || r.room_number.toLowerCase().includes(q));
+  const roomCount = rooms.filter((r) => r.kind === "room").length;
+  const shopCount = rooms.length - roomCount;
+
   return (
     <>
-      <Typography.Title level={3} className="page-title">
-        Rooms & Shops
-      </Typography.Title>
-      <p className="page-sub">Add rooms or shops and set their rent and advance.</p>
-      <Card className="soft-card" title="Add new" style={{ marginBottom: 16 }}>
+      <PageHeader
+        title="Rooms & Shops"
+        subtitle={`${roomCount} rooms, ${shopCount} shops`}
+        extra={
+          <Button
+            type="primary"
+            size="large"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              setAddOpen(true);
+              setTimeout(() => numberRef.current?.focus(), 100);
+            }}
+          >
+            Add room / shop
+          </Button>
+        }
+      />
+
+      <div className="toolbar">
+        <Segmented
+          value={kind}
+          onChange={setKind}
+          options={[
+            { label: "All", value: "all" },
+            { label: "Rooms", value: "room" },
+            { label: "Shops", value: "shop" },
+          ]}
+        />
+        <Input
+          className="grow"
+          allowClear
+          prefix={<SearchOutlined />}
+          placeholder="Search number"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+        />
+      </div>
+
+      {loading ? (
+        <Card className="soft-card">
+          <Skeleton active />
+        </Card>
+      ) : visible.length === 0 ? (
+        <Card className="soft-card">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={rooms.length === 0 ? "Nothing here yet" : "Nothing matches"}
+          >
+            {rooms.length === 0 && (
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>
+                Add your first room or shop
+              </Button>
+            )}
+          </Empty>
+        </Card>
+      ) : (
+        <div className="unit-list">
+          {visible.map((r) => (
+            <div key={r.id} className="unit-card plain">
+              <div>
+                <div className="unit-title">
+                  <Tag color={r.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                    {r.kind === "shop" ? "Shop" : "Room"}
+                  </Tag>
+                  <span className="unit-num">{r.room_number}</span>
+                </div>
+                <div className="unit-stats">
+                  <span>
+                    Rent <b>{fmt(r.rent)}</b>
+                  </span>
+                  <span>
+                    Advance <b>{fmt(r.advance)}</b>
+                  </span>
+                </div>
+              </div>
+              <div className="unit-tools">
+                <Tooltip title="Edit rent / advance">
+                  <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(r)} />
+                </Tooltip>
+                <Tooltip title="Use / return advance">
+                  <Button
+                    type="text"
+                    icon={<RollbackOutlined />}
+                    disabled={Number(r.advance) <= 0}
+                    onClick={() => openReturn(r)}
+                  />
+                </Tooltip>
+                <Popconfirm title={`Delete ${labelOf(r)}?`} onConfirm={() => removeRoom(r)}>
+                  <Button type="text" danger icon={<DeleteOutlined />} />
+                </Popconfirm>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Modal
+        title="Add room or shop"
+        open={addOpen}
+        onCancel={() => setAddOpen(false)}
+        footer={null}
+        centered
+        destroyOnHidden
+      >
+        <p style={{ color: "#64748b", marginTop: 0 }}>
+          After you add one, the form clears so you can add the next. Close it when you are done.
+        </p>
         <Form
           form={form}
-          layout="inline"
-          className="add-form"
-          style={{ rowGap: 12 }}
+          layout="vertical"
           onFinish={addRoom}
           initialValues={{ kind: "room" }}
           autoComplete="off"
         >
           <Form.Item name="kind">
             <Segmented
+              block
               options={[
                 { label: "Room", value: "room" },
                 { label: "Shop", value: "shop" },
               ]}
             />
           </Form.Item>
-          <Form.Item name="room_number" rules={[{ required: true, message: "Number" }]}>
-            <Input ref={inputRef} placeholder="Room / shop number" style={{ width: 220 }} />
+          <Form.Item
+            name="room_number"
+            label="Number"
+            rules={[{ required: true, message: "Enter the room or shop number" }]}
+          >
+            <Input ref={numberRef} size="large" placeholder="e.g. 101" />
           </Form.Item>
-          <Form.Item name="rent">
-            <InputNumber placeholder="Rent (optional)" min={0} style={{ width: 180 }} />
+          <Form.Item name="rent" label="Monthly rent (optional)">
+            <InputNumber size="large" min={0} style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="advance">
-            <InputNumber placeholder="Advance (optional)" min={0} style={{ width: 180 }} />
+          <Form.Item name="advance" label="Advance taken (optional)">
+            <InputNumber size="large" min={0} style={{ width: "100%" }} />
           </Form.Item>
-          <Button type="primary" htmlType="submit" loading={saving} icon={<PlusOutlined />}>
+          <Button type="primary" size="large" htmlType="submit" loading={saving} block>
             Add
           </Button>
         </Form>
-      </Card>
-      <Card className="soft-card" title={`All (${rooms.length})`}>
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={rooms}
-          pagination={false}
-          scroll={{ x: true }}
-          columns={[
-            {
-              title: "Type",
-              dataIndex: "kind",
-              render: (k: Kind) =>
-                k === "shop" ? <Tag color="purple">Shop</Tag> : <Tag color="blue">Room</Tag>,
-            },
-            { title: "Number", dataIndex: "room_number" },
-            {
-              title: "Rent",
-              dataIndex: "rent",
-              render: (rent: number, room: Room) => (
-                <InputNumber
-                  key={`${room.id}-${rent}`}
-                  min={0}
-                  style={{ width: 160 }}
-                  defaultValue={rent}
-                  onBlur={(e) => updateField(room, "rent", Number(e.target.value))}
-                />
-              ),
-            },
-            {
-              title: "Advance",
-              dataIndex: "advance",
-              render: (advance: number, room: Room) => (
-                <InputNumber
-                  key={`${room.id}-adv-${advance}`}
-                  min={0}
-                  style={{ width: 160 }}
-                  defaultValue={advance}
-                  onBlur={(e) => updateField(room, "advance", Number(e.target.value))}
-                />
-              ),
-            },
-            {
-              title: "",
-              render: (_, room: Room) => (
-                <Space>
-                  <Button
-                    size="small"
-                    icon={<RollbackOutlined />}
-                    disabled={Number(room.advance) <= 0}
-                    onClick={() => openReturn(room)}
-                  >
-                    Use / return advance
-                  </Button>
-                  <Popconfirm title="Delete this entry?" onConfirm={() => removeRoom(room.id)}>
-                    <Button danger type="text" size="small" icon={<DeleteOutlined />} />
-                  </Popconfirm>
-                </Space>
-              ),
-            },
-          ]}
-        />
-      </Card>
+      </Modal>
 
       <Modal
-        title={`Advance - ${returnRoom?.kind === "shop" ? "Shop" : "Room"} ${returnRoom?.room_number ?? ""}`}
+        title={editRoom ? `Edit ${labelOf(editRoom)}` : ""}
+        open={!!editRoom}
+        onCancel={() => setEditRoom(null)}
+        onOk={() => editForm.submit()}
+        okText="Save"
+        confirmLoading={saving}
+        centered
+      >
+        <Form form={editForm} layout="vertical" onFinish={saveEdit} autoComplete="off">
+          <Form.Item name="rent" label="Monthly rent">
+            <InputNumber size="large" min={0} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item name="advance" label="Advance held">
+            <InputNumber size="large" min={0} style={{ width: "100%" }} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={returnRoom ? `Advance - ${labelOf(returnRoom)}` : ""}
         open={!!returnRoom}
         onCancel={() => setReturnRoom(null)}
         onOk={() => returnForm.submit()}
@@ -287,8 +390,8 @@ export default function RoomsPage() {
         centered
       >
         <p>
-          Advance held: <b>{Number(returnRoom?.advance ?? 0).toLocaleString()}</b> · Rent:{" "}
-          <b>{Number(returnRoom?.rent ?? 0).toLocaleString()}</b>
+          Advance held: <b>{fmt(returnRoom?.advance ?? 0)}</b> - Rent:{" "}
+          <b>{fmt(returnRoom?.rent ?? 0)}</b>
         </p>
         <Form form={returnForm} layout="vertical" onFinish={returnAdvance} autoComplete="off">
           <Form.Item name="mode">
@@ -302,11 +405,7 @@ export default function RoomsPage() {
             />
           </Form.Item>
           {returnMode === "applied" ? (
-            <Form.Item
-              name="month"
-              label="Rent month to settle"
-              rules={[{ required: true }]}
-            >
+            <Form.Item name="month" label="Rent month to settle" rules={[{ required: true }]}>
               <DatePicker picker="month" allowClear={false} style={{ width: "100%" }} />
             </Form.Item>
           ) : (

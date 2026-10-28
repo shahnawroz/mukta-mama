@@ -1,64 +1,59 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { App, Card, Col, Empty, Progress, Row, Statistic, Tag, Typography } from "antd";
-import { createClient } from "@/lib/supabase/client";
+import { useRouter } from "next/navigation";
+import { App, Button, Card, Empty, Progress, Skeleton, Tag } from "antd";
+import { BankOutlined, MinusCircleOutlined, WalletOutlined } from "@ant-design/icons";
 import dayjs from "dayjs";
+import { createClient } from "@/lib/supabase/client";
+import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
 type Unit = { id: string; kind: Kind; room_number: string; rent: number; advance: number };
 type Payment = { room_id: string; amount: number; advance_applied: number };
 
-type Summary = { count: number; paidCount: number; total: number; paid: number; due: number };
+const fmt = (v: number) => Number(v).toLocaleString();
 
-function summarize(units: Unit[], paidByUnit: Map<string, number>): Summary {
+function sumOf(units: Unit[], paidByUnit: Map<string, number>) {
   const total = units.reduce((s, u) => s + Number(u.rent), 0);
   const paidUnits = units.filter((u) => paidByUnit.has(u.id));
   const paid = paidUnits.reduce((s, u) => s + (paidByUnit.get(u.id) ?? 0), 0);
-  return { count: units.length, paidCount: paidUnits.length, total, paid, due: total - paid };
+  return { count: units.length, paidCount: paidUnits.length, total, paid };
 }
 
-function SummaryCard({
-  title,
+function GroupRow({
+  label,
   color,
-  summary,
-  loading,
+  data,
 }: {
-  title: string;
+  label: string;
   color: string;
-  summary?: Summary;
-  loading: boolean;
+  data: ReturnType<typeof sumOf>;
 }) {
-  const percent = summary?.total ? Math.round((summary.paid / summary.total) * 100) : 0;
+  const percent = data.total ? Math.round((data.paid / data.total) * 100) : 0;
   return (
-    <Card
-      className="soft-card"
-      loading={loading}
-      title={title}
-      extra={
-        <Typography.Text type="secondary">
-          {summary?.paidCount}/{summary?.count} paid
-        </Typography.Text>
-      }
-    >
-      <Row gutter={[12, 12]}>
-        <Col xs={24} sm={8}>
-          <Statistic title="Total" value={summary?.total} />
-        </Col>
-        <Col xs={12} sm={8}>
-          <Statistic title="Paid" value={summary?.paid} styles={{ content: { color: "#16a34a" } }} />
-        </Col>
-        <Col xs={12} sm={8}>
-          <Statistic title="Due" value={summary?.due} styles={{ content: { color: "#e11d48" } }} />
-        </Col>
-      </Row>
-      <Progress percent={percent} strokeColor={color} style={{ marginTop: 12 }} />
-    </Card>
+    <div style={{ marginTop: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+        <b>
+          {label} <span style={{ color: "#64748b", fontWeight: 400 }}>({data.count})</span>
+        </b>
+        <span style={{ color: "#64748b" }}>
+          {data.paidCount}/{data.count} paid
+        </span>
+      </div>
+      <Progress percent={percent} strokeColor={color} showInfo={false} size="small" />
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
+        <span style={{ color: "#16a34a" }}>Paid {fmt(data.paid)}</span>
+        <span style={{ color: "#e11d48" }}>Due {fmt(data.total - data.paid)}</span>
+        <span style={{ color: "#64748b" }}>Total {fmt(data.total)}</span>
+      </div>
+    </div>
   );
 }
 
 export default function DashboardPage() {
   const { message } = App.useApp();
+  const router = useRouter();
   const [units, setUnits] = useState<Unit[] | null>(null);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [collectedAll, setCollectedAll] = useState(0);
@@ -72,10 +67,7 @@ export default function DashboardPage() {
     const key = dayjs().format("YYYY-MM-01");
     const supabase = createClient();
     Promise.all([
-      supabase
-        .from("rooms")
-        .select("id, kind, room_number, rent, advance")
-        .order("room_number"),
+      supabase.from("rooms").select("id, kind, room_number, rent, advance").order("room_number"),
       supabase.from("payments").select("room_id, amount, advance_applied").eq("month", key),
       supabase.from("payments").select("amount, advance_applied"),
       supabase.from("bank_transfers").select("amount"),
@@ -105,101 +97,115 @@ export default function DashboardPage() {
 
   const loading = units === null;
   const all = units ?? [];
-  const paidByUnit = new Map(payments.map((p) => [p.room_id, Number(p.amount) + Number(p.advance_applied)]));
-  const rooms = all.filter((u) => u.kind === "room");
-  const shops = all.filter((u) => u.kind === "shop");
+  const paidByUnit = new Map(
+    payments.map((p) => [p.room_id, Number(p.amount) + Number(p.advance_applied)]),
+  );
+  const overall = sumOf(all, paidByUnit);
+  const rooms = sumOf(all.filter((u) => u.kind === "room"), paidByUnit);
+  const shops = sumOf(all.filter((u) => u.kind === "shop"), paidByUnit);
   const unpaid = all.filter((u) => !paidByUnit.has(u.id));
   const advance = all.reduce((s, u) => s + Number(u.advance), 0);
+  const percent = overall.total ? Math.round((overall.paid / overall.total) * 100) : 0;
 
   return (
     <>
-      <Typography.Title level={3} className="page-title">
-        Dashboard
-      </Typography.Title>
-      <p className="page-sub">{month.format("MMMM YYYY")} overview</p>
+      <PageHeader title="Dashboard" subtitle={`${month.format("MMMM YYYY")} overview`} />
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12} lg={8}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic
-              title="Cash on hand"
-              value={collectedAll - inBank - spent}
-              styles={{ content: { color: "#16a34a" } }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} lg={8}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="In bank" value={inBank} styles={{ content: { color: "#4f46e5" } }} />
-          </Card>
-        </Col>
-        <Col xs={12} lg={8}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="Advance held" value={advance} />
-          </Card>
-        </Col>
-        <Col xs={12} lg={8}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic
-              title="Expenses this month"
-              value={spentMonth}
-              styles={{ content: { color: "#e11d48" } }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12} lg={8}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="Electricity this month" value={electricity} />
-          </Card>
-        </Col>
-      </Row>
+      <div className="hero">
+        <div className="hero-label">Cash on hand</div>
+        <div className="hero-amount">{loading ? "..." : fmt(collectedAll - inBank - spent)}</div>
+        <div className="hero-grid">
+          <div className="hero-mini">
+            <span>In bank</span>
+            <b>{fmt(inBank)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>Advance held</span>
+            <b>{fmt(advance)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>Expenses this month</span>
+            <b>{fmt(spentMonth)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>Electricity this month</span>
+            <b>{fmt(electricity)}</b>
+          </div>
+        </div>
+      </div>
 
-      <Row gutter={[16, 16]}>
-        <Col xs={24}>
-          <SummaryCard
-            title={`Overall (${all.length} rooms & shops)`}
-            color="#4f46e5"
-            summary={summarize(all, paidByUnit)}
-            loading={loading}
-          />
-        </Col>
-        <Col xs={24} lg={12}>
-          <SummaryCard
-            title={`Rooms (${rooms.length})`}
-            color="#2563eb"
-            summary={summarize(rooms, paidByUnit)}
-            loading={loading}
-          />
-        </Col>
-        <Col xs={24} lg={12}>
-          <SummaryCard
-            title={`Shops (${shops.length})`}
-            color="#9333ea"
-            summary={summarize(shops, paidByUnit)}
-            loading={loading}
-          />
-        </Col>
-        <Col xs={24}>
-          <Card
-            className="soft-card"
-            title={`Not collected yet (${unpaid.length})`}
-            loading={loading}
-          >
-            {unpaid.length === 0 ? (
-              <Empty description="Everything collected" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-            ) : (
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-                {unpaid.map((u) => (
-                  <Tag key={u.id} color={u.kind === "shop" ? "purple" : "blue"}>
-                    {u.kind === "shop" ? "Shop" : "Room"} {u.room_number}
-                    {Number(u.rent) > 0 && ` · ${Number(u.rent).toLocaleString()}`}
-                  </Tag>
-                ))}
+      <div className="quick-actions">
+        <Button type="primary" size="large" icon={<WalletOutlined />} onClick={() => router.push("/rent")}>
+          Collect rent
+        </Button>
+        <Button size="large" icon={<MinusCircleOutlined />} onClick={() => router.push("/expenses")}>
+          Add expense
+        </Button>
+        <Button size="large" icon={<BankOutlined />} onClick={() => router.push("/income")}>
+          Transfer to bank
+        </Button>
+      </div>
+
+      <div className="section-title">Rent this month</div>
+      <Card className="soft-card">
+        {loading ? (
+          <Skeleton active />
+        ) : (
+          <>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+              <div>
+                <span style={{ fontSize: 28, fontWeight: 700 }}>{fmt(overall.paid)}</span>
+                <span style={{ color: "#64748b" }}> of {fmt(overall.total)} collected</span>
               </div>
-            )}
-          </Card>
-        </Col>
-      </Row>
+              <b style={{ color: "#4f46e5" }}>{percent}%</b>
+            </div>
+            <Progress percent={percent} strokeColor="#4f46e5" showInfo={false} />
+            <div style={{ color: "#64748b", fontSize: 13 }}>
+              {overall.paidCount} of {overall.count} paid - {fmt(overall.total - overall.paid)} still due
+            </div>
+            <GroupRow label="Rooms" color="#2563eb" data={rooms} />
+            <GroupRow label="Shops" color="#9333ea" data={shops} />
+          </>
+        )}
+      </Card>
+
+      <div className="section-title">Waiting for rent {!loading && `(${unpaid.length})`}</div>
+      {loading ? (
+        <Card className="soft-card">
+          <Skeleton active />
+        </Card>
+      ) : unpaid.length === 0 ? (
+        <Card className="soft-card">
+          <Empty description="Everything collected this month" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+        </Card>
+      ) : (
+        <div className="unit-list">
+          {unpaid.slice(0, 12).map((u) => (
+            <div
+              key={u.id}
+              className="unit-card due"
+              style={{ cursor: "pointer" }}
+              onClick={() => router.push("/rent")}
+            >
+              <div>
+                <div className="unit-title">
+                  <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                    {u.kind === "shop" ? "Shop" : "Room"}
+                  </Tag>
+                  <span className="unit-num">{u.room_number}</span>
+                </div>
+                <div className="unit-rent">{fmt(u.rent)}</div>
+              </div>
+              <Tag color="red">Due</Tag>
+            </div>
+          ))}
+          {unpaid.length > 12 && (
+            <Button size="large" onClick={() => router.push("/rent")} style={{ height: "auto" }}>
+              View all {unpaid.length}
+            </Button>
+          )}
+        </div>
+      )}
     </>
   );
 }

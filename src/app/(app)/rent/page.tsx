@@ -1,28 +1,16 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import {
-  App,
-  Button,
-  Card,
-  Col,
-  DatePicker,
-  Popconfirm,
-  Row,
-  Segmented,
-  Space,
-  Statistic,
-  Table,
-  Tag,
-  Tooltip,
-  Typography,
-} from "antd";
+import { App, Button, Card, DatePicker, Empty, Input, Popconfirm, Progress, Segmented, Skeleton, Tag } from "antd";
+import { CheckCircleFilled, LeftOutlined, RightOutlined, SearchOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import PageHeader from "@/components/PageHeader";
 
-type Row = {
+type Kind = "room" | "shop";
+type Unit = {
   id: string;
-  kind: "room" | "shop";
+  kind: Kind;
   room_number: string;
   rent: number;
   payment_id: string | null;
@@ -30,20 +18,26 @@ type Row = {
   paid_by: string | null;
 };
 
+const fmt = (v: number) => Number(v).toLocaleString();
+
 export default function RentPage() {
   const { message } = App.useApp();
   const [month, setMonth] = useState<Dayjs>(dayjs());
-  const [rows, setRows] = useState<Row[]>([]);
+  const [rows, setRows] = useState<Unit[]>([]);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"all" | "room" | "shop">("all");
+  const [busy, setBusy] = useState<string | null>(null);
+  const [kind, setKind] = useState<"all" | Kind>("all");
+  const [status, setStatus] = useState<"all" | "due" | "paid">("all");
+  const [search, setSearch] = useState("");
 
   const monthKey = month.format("YYYY-MM-01");
 
   const load = useCallback(async () => {
-    setLoading(true);
     const supabase = createClient();
     const [rooms, payments] = await Promise.all([
-      supabase.from("rooms").select("id, kind, room_number, rent")
+      supabase
+        .from("rooms")
+        .select("id, kind, room_number, rent")
         .order("kind", { ascending: false })
         .order("room_number"),
       supabase.from("payments").select("id, room_id, paid_at, paid_by").eq("month", monthKey),
@@ -67,7 +61,13 @@ export default function RentPage() {
     load();
   }, [load]);
 
-  async function markPaid(row: Row) {
+  function changeMonth(next: Dayjs) {
+    setLoading(true);
+    setMonth(next);
+  }
+
+  async function markPaid(row: Unit) {
+    setBusy(row.id);
     const supabase = createClient();
     const { data: auth } = await supabase.auth.getUser();
     const { error } = await supabase.from("payments").insert({
@@ -77,12 +77,14 @@ export default function RentPage() {
       amount: row.rent,
       paid_at: new Date().toISOString(),
     });
+    setBusy(null);
     if (error) return message.error(error.message);
     message.success(`${row.room_number} marked as paid`);
     load();
   }
 
-  async function markDue(row: Row) {
+  async function markDue(row: Unit) {
+    setBusy(row.id);
     const supabase = createClient();
     // Rent settled from advance: give that amount back to the room's advance.
     const { data: payment } = await supabase
@@ -91,7 +93,10 @@ export default function RentPage() {
       .eq("id", row.payment_id!)
       .single();
     const { error } = await supabase.from("payments").delete().eq("id", row.payment_id!);
-    if (error) return message.error(error.message);
+    if (error) {
+      setBusy(null);
+      return message.error(error.message);
+    }
     const applied = Number(payment?.advance_applied ?? 0);
     if (applied > 0) {
       const { data: room } = await supabase.from("rooms").select("advance").eq("id", row.id).single();
@@ -100,107 +105,150 @@ export default function RentPage() {
         .update({ advance: Number(room?.advance ?? 0) + applied })
         .eq("id", row.id);
     }
+    setBusy(null);
     message.success(`${row.room_number} marked as due`);
     load();
   }
 
-  const visible = rows.filter((r) => filter === "all" || r.kind === filter);
-
-  const paidRows = visible.filter((r) => r.paid_at);
+  const inKind = rows.filter((r) => kind === "all" || r.kind === kind);
+  const total = inKind.reduce((s, r) => s + Number(r.rent), 0);
+  const paidRows = inKind.filter((r) => r.paid_at);
   const paidTotal = paidRows.reduce((s, r) => s + Number(r.rent), 0);
-  const dueTotal = visible.reduce((s, r) => s + Number(r.rent), 0) - paidTotal;
+  const percent = total ? Math.round((paidTotal / total) * 100) : 0;
+
+  const q = search.trim().toLowerCase();
+  const visible = inKind
+    .filter((r) => status === "all" || (status === "paid" ? !!r.paid_at : !r.paid_at))
+    .filter((r) => !q || r.room_number.toLowerCase().includes(q));
 
   return (
     <>
-      <Typography.Title level={3} className="page-title">
-        Rent
-      </Typography.Title>
-      <p className="page-sub">Tap Paid when rent is received. The date is saved automatically.</p>
-      <Space wrap style={{ marginBottom: 16 }}>
+      <PageHeader
+        title="Rent"
+        subtitle="Tap Paid when rent is received. The date is saved automatically."
+        extra={
+          <div className="month-nav">
+            <Button
+              icon={<LeftOutlined />}
+              onClick={() => changeMonth(month.subtract(1, "month"))}
+              aria-label="Previous month"
+            />
+            <DatePicker
+              picker="month"
+              allowClear={false}
+              value={month}
+              onChange={(d) => d && changeMonth(d)}
+              format="MMMM YYYY"
+              style={{ width: 150 }}
+            />
+            <Button
+              icon={<RightOutlined />}
+              onClick={() => changeMonth(month.add(1, "month"))}
+              aria-label="Next month"
+            />
+          </div>
+        }
+      />
+
+      <Card className="soft-card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <div>
+            <span style={{ fontSize: 26, fontWeight: 700 }}>{fmt(paidTotal)}</span>
+            <span style={{ color: "#64748b" }}> of {fmt(total)} collected</span>
+          </div>
+          <b style={{ color: "#4f46e5" }}>{percent}%</b>
+        </div>
+        <Progress percent={percent} strokeColor="#4f46e5" showInfo={false} />
+        <div style={{ display: "flex", gap: 16, fontSize: 13 }}>
+          <span style={{ color: "#16a34a" }}>{paidRows.length} paid</span>
+          <span style={{ color: "#e11d48" }}>
+            {inKind.length - paidRows.length} due - {fmt(total - paidTotal)}
+          </span>
+        </div>
+      </Card>
+
+      <div className="toolbar">
         <Segmented
-          value={filter}
-          onChange={setFilter}
+          value={status}
+          onChange={setStatus}
           options={[
             { label: "All", value: "all" },
+            { label: "Due", value: "due" },
+            { label: "Paid", value: "paid" },
+          ]}
+        />
+        <Segmented
+          value={kind}
+          onChange={setKind}
+          options={[
+            { label: "Rooms & Shops", value: "all" },
             { label: "Rooms", value: "room" },
             { label: "Shops", value: "shop" },
           ]}
         />
-        <DatePicker
-          picker="month"
-          allowClear={false}
-          value={month}
-          onChange={(d) => d && setMonth(d)}
+        <Input
+          className="grow"
+          allowClear
+          prefix={<SearchOutlined />}
+          placeholder="Search number"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
         />
-      </Space>
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12}>
-          <Card className="soft-card">
-            <Statistic
-              title={`Paid (${paidRows.length})`}
-              value={paidTotal}
-              styles={{ content: { color: "#16a34a" } }}
-            />
-          </Card>
-        </Col>
-        <Col xs={12}>
-          <Card className="soft-card">
-            <Statistic
-              title={`Due (${visible.length - paidRows.length})`}
-              value={dueTotal}
-              styles={{ content: { color: "#e11d48" } }}
-            />
-          </Card>
-        </Col>
-      </Row>
-      <Card className="soft-card">
-      <Table
-        rowKey="id"
-        loading={loading}
-        dataSource={visible}
-        pagination={false}
-        scroll={{ x: true }}
-        columns={[
-          {
-            title: "Type",
-            dataIndex: "kind",
-            render: (k: Row["kind"]) =>
-              k === "shop" ? <Tag color="purple">Shop</Tag> : <Tag color="blue">Room</Tag>,
-          },
-          { title: "Number", dataIndex: "room_number" },
-          { title: "Rent", dataIndex: "rent" },
-          {
-            title: "Status",
-            render: (_, row: Row) =>
-              row.paid_at ? <Tag color="green">Paid</Tag> : <Tag color="red">Due</Tag>,
-          },
-          {
-            title: "Paid date",
-            dataIndex: "paid_at",
-            render: (v: string | null) => (v ? dayjs(v).format("DD MMM YYYY") : "-"),
-          },
-          {
-            title: "Paid by",
-            dataIndex: "paid_by",
-            render: (v: string | null, row: Row) =>
-              row.paid_at ? <Tooltip title={v}>Admin</Tooltip> : "-",
-          },
-          {
-            title: "",
-            render: (_, row: Row) =>
-              row.paid_at ? (
-                <Popconfirm title="Mark as due again?" onConfirm={() => markDue(row)}>
-                  <Button size="small">Undo</Button>
-                </Popconfirm>
-              ) : (
-                <Button type="primary" size="small" onClick={() => markPaid(row)}>
-                  Paid
-                </Button>
-              ),
-          },
-        ]}
-      />
-      </Card>
+      </div>
+
+      {loading ? (
+        <Card className="soft-card">
+          <Skeleton active />
+        </Card>
+      ) : visible.length === 0 ? (
+        <Card className="soft-card">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={
+              rows.length === 0
+                ? "No rooms or shops yet. Add some in Rooms & Shops."
+                : status === "due"
+                  ? "Nothing due. Everything is collected."
+                  : "Nothing matches."
+            }
+          />
+        </Card>
+      ) : (
+        <div className="unit-list">
+          {visible.map((r) => (
+            <div key={r.id} className={`unit-card ${r.paid_at ? "paid" : "due"}`}>
+              <div>
+                <div className="unit-title">
+                  <Tag color={r.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                    {r.kind === "shop" ? "Shop" : "Room"}
+                  </Tag>
+                  <span className="unit-num">{r.room_number}</span>
+                </div>
+                <div className="unit-rent">{fmt(r.rent)}</div>
+                {r.paid_at && (
+                  <div className="unit-meta">Paid {dayjs(r.paid_at).format("DD MMM YYYY")} by Admin</div>
+                )}
+              </div>
+              <div className="unit-action">
+                {r.paid_at ? (
+                  <>
+                    <CheckCircleFilled style={{ color: "#16a34a", fontSize: 22 }} />
+                    <Popconfirm title="Mark as due again?" onConfirm={() => markDue(r)}>
+                      <Button type="text" loading={busy === r.id}>
+                        Undo
+                      </Button>
+                    </Popconfirm>
+                  </>
+                ) : (
+                  <Button type="primary" size="large" loading={busy === r.id} onClick={() => markPaid(r)}>
+                    Paid
+                  </Button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </>
   );
 }

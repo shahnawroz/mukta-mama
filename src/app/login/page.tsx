@@ -1,25 +1,46 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Alert, App, Button, Card, Form, Input, Typography } from "antd";
+import { Alert, App, Button, Card, Checkbox, Form, Input, Typography } from "antd";
 import { HomeOutlined, LockOutlined, MailOutlined } from "@ant-design/icons";
 import { createClient } from "@/lib/supabase/client";
+
+type Values = { email: string; password: string; remember: boolean };
+
+const EMAIL_KEY = "remembered_email";
 
 export default function LoginPage() {
   const router = useRouter();
   const { message } = App.useApp();
+  const [form] = Form.useForm<Values>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function onFinish(values: { email: string; password: string }) {
+  // Fill the email back in if the user ticked "Remember me" last time.
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(EMAIL_KEY);
+      if (saved) form.setFieldsValue({ email: saved, remember: true });
+    } catch {
+      // storage unavailable (private mode); nothing to restore
+    }
+  }, [form]);
+
+  async function onFinish({ remember, ...credentials }: Values) {
     setLoading(true);
     setError(null);
-    const { error } = await createClient().auth.signInWithPassword(values);
+    const { error } = await createClient().auth.signInWithPassword(credentials);
     setLoading(false);
     if (error) {
       setError(error.message);
       return;
+    }
+    try {
+      if (remember) localStorage.setItem(EMAIL_KEY, credentials.email);
+      else localStorage.removeItem(EMAIL_KEY);
+    } catch {
+      // ignore storage errors
     }
     message.success("Logged in");
     router.replace("/");
@@ -46,16 +67,27 @@ export default function LoginPage() {
           <Typography.Text type="secondary">Sign in to manage your rent</Typography.Text>
         </div>
         {error && <Alert type="error" title={error} showIcon style={{ marginBottom: 16 }} />}
-        <Form layout="vertical" onFinish={onFinish} requiredMark={false}>
+        <Form
+          form={form}
+          name="login"
+          layout="vertical"
+          onFinish={onFinish}
+          requiredMark={false}
+          initialValues={{ remember: true }}
+        >
           <Form.Item name="email" label="Email" rules={[{ required: true, type: "email" }]}>
-            <Input size="large" prefix={<MailOutlined />} autoComplete="email" />
+            <Input size="large" name="email" prefix={<MailOutlined />} autoComplete="username" />
           </Form.Item>
           <Form.Item name="password" label="Password" rules={[{ required: true }]}>
             <Input.Password
               size="large"
+              name="password"
               prefix={<LockOutlined />}
               autoComplete="current-password"
             />
+          </Form.Item>
+          <Form.Item name="remember" valuePropName="checked">
+            <Checkbox>Remember me</Checkbox>
           </Form.Item>
           <Button type="primary" htmlType="submit" size="large" loading={loading} block>
             Sign in

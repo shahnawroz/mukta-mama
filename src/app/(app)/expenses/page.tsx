@@ -5,32 +5,33 @@ import {
   App,
   Button,
   Card,
-  Col,
   DatePicker,
+  Empty,
   Form,
   Input,
   type InputRef,
   InputNumber,
+  Modal,
   Popconfirm,
-  Row,
-  Space,
-  Statistic,
-  Table,
-  Typography,
+  Skeleton,
 } from "antd";
-import { DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { DeleteOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import PageHeader from "@/components/PageHeader";
 
 type Expense = { id: string; amount: number; expense_date: string; note: string };
 type FormValues = { amount: number; expense_date: Dayjs; note: string };
 
+const fmt = (v: number) => Number(v).toLocaleString();
+
 export default function ExpensesPage() {
   const { message } = App.useApp();
   const [expenses, setExpenses] = useState<Expense[]>([]);
-  const [month, setMonth] = useState<Dayjs | null>(dayjs());
+  const [month, setMonth] = useState<Dayjs>(dayjs());
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [open, setOpen] = useState(false);
   const noteRef = useRef<InputRef>(null);
   const [form] = Form.useForm<FormValues>();
 
@@ -61,7 +62,7 @@ export default function ExpensesPage() {
       });
     setSaving(false);
     if (error) return message.error(error.message);
-    message.success(`Expense of ${values.amount.toLocaleString()} added`);
+    message.success(`Expense of ${fmt(values.amount)} added`);
     form.resetFields(["amount", "note"]);
     noteRef.current?.focus();
     load();
@@ -74,99 +75,111 @@ export default function ExpensesPage() {
     load();
   }
 
-  const shown = month
-    ? expenses.filter((e) => dayjs(e.expense_date).isSame(month, "month"))
-    : expenses;
-  const shownTotal = shown.reduce((s, e) => s + Number(e.amount), 0);
-  const allTotal = expenses.reduce((s, e) => s + Number(e.amount), 0);
+  const shown = expenses.filter((e) => dayjs(e.expense_date).isSame(month, "month"));
+  const monthTotal = shown.reduce((s, e) => s + Number(e.amount), 0);
 
   return (
     <>
-      <Typography.Title level={3} className="page-title">
-        Expenses
-      </Typography.Title>
-      <p className="page-sub">Money spent from the rent you collected. It comes out of cash on hand.</p>
+      <PageHeader
+        title="Expenses"
+        subtitle="Money spent from the rent you collected. It comes out of cash on hand."
+        extra={
+          <Button
+            type="primary"
+            size="large"
+            icon={<PlusOutlined />}
+            onClick={() => {
+              setOpen(true);
+              setTimeout(() => noteRef.current?.focus(), 100);
+            }}
+          >
+            Add expense
+          </Button>
+        }
+      />
 
-      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={12}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic
-              title={month ? `${month.format("MMMM YYYY")}` : "Shown"}
-              value={shownTotal}
-              styles={{ content: { color: "#e11d48" } }}
+      <Card className="soft-card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+          <div>
+            <div style={{ color: "#64748b", fontSize: 13 }}>Spent in {month.format("MMMM YYYY")}</div>
+            <div style={{ fontSize: 28, fontWeight: 700, color: "#e11d48" }}>
+              {loading ? "..." : fmt(monthTotal)}
+            </div>
+          </div>
+          <div className="month-nav">
+            <Button icon={<LeftOutlined />} onClick={() => setMonth(month.subtract(1, "month"))} />
+            <DatePicker
+              picker="month"
+              allowClear={false}
+              value={month}
+              onChange={(d) => d && setMonth(d)}
+              format="MMM YYYY"
+              style={{ width: 120 }}
             />
-          </Card>
-        </Col>
-        <Col xs={12}>
-          <Card className="soft-card" loading={loading}>
-            <Statistic title="All time" value={allTotal} />
-          </Card>
-        </Col>
-      </Row>
+            <Button icon={<RightOutlined />} onClick={() => setMonth(month.add(1, "month"))} />
+          </div>
+        </div>
+      </Card>
 
-      <Card className="soft-card" title="Add expense" style={{ marginBottom: 16 }}>
+      {loading ? (
+        <Card className="soft-card">
+          <Skeleton active />
+        </Card>
+      ) : shown.length === 0 ? (
+        <Card className="soft-card">
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={`No expenses in ${month.format("MMMM YYYY")}`}
+          />
+        </Card>
+      ) : (
+        <div className="row-list">
+          {shown.map((e) => (
+            <div key={e.id} className="row-card">
+              <div>
+                <div className="row-title">{e.note}</div>
+                <div className="row-sub">{dayjs(e.expense_date).format("DD MMM YYYY")}</div>
+              </div>
+              <div className="row-side">
+                <div className="row-amount out">-{fmt(e.amount)}</div>
+                <Popconfirm title="Delete this expense?" onConfirm={() => removeExpense(e.id)}>
+                  <Button type="text" danger icon={<DeleteOutlined />} />
+                </Popconfirm>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <Modal title="Add expense" open={open} onCancel={() => setOpen(false)} footer={null} centered destroyOnHidden>
+        <p style={{ color: "#64748b", marginTop: 0 }}>
+          After you add one, the form clears so you can add the next. Close it when you are done.
+        </p>
         <Form
           form={form}
-          layout="inline"
-          className="add-form"
-          style={{ rowGap: 12 }}
+          layout="vertical"
           onFinish={addExpense}
           initialValues={{ expense_date: dayjs() }}
           autoComplete="off"
         >
-          <Form.Item name="note" rules={[{ required: true, message: "What was it for?" }]}>
-            <Input ref={noteRef} placeholder="What was it for? e.g. Plumber" style={{ width: 260 }} />
+          <Form.Item
+            name="note"
+            label="What was it for?"
+            rules={[{ required: true, message: "Enter what it was for" }]}
+          >
+            <Input ref={noteRef} size="large" placeholder="e.g. Plumber, repair, cleaning" />
           </Form.Item>
-          <Form.Item name="amount" rules={[{ required: true, message: "Amount" }]}>
-            <InputNumber placeholder="Amount" min={1} style={{ width: 160 }} />
+          <Form.Item name="amount" label="Amount" rules={[{ required: true, message: "Enter amount" }]}>
+            <InputNumber size="large" min={1} style={{ width: "100%" }} />
           </Form.Item>
-          <Form.Item name="expense_date" rules={[{ required: true, message: "Date" }]}>
-            <DatePicker allowClear={false} style={{ width: 160 }} />
+          <Form.Item name="expense_date" label="Date" rules={[{ required: true }]}>
+            <DatePicker allowClear={false} style={{ width: "100%" }} />
           </Form.Item>
-          <Button type="primary" htmlType="submit" loading={saving} icon={<PlusOutlined />}>
+          <Button type="primary" size="large" htmlType="submit" loading={saving} block>
             Add
           </Button>
         </Form>
-      </Card>
-
-      <Card
-        className="soft-card"
-        title={`Expenses (${shown.length})`}
-        extra={
-          <Space>
-            <DatePicker picker="month" value={month} onChange={setMonth} placeholder="All months" />
-          </Space>
-        }
-      >
-        <Table
-          rowKey="id"
-          loading={loading}
-          dataSource={shown}
-          pagination={{ pageSize: 20, hideOnSinglePage: true }}
-          scroll={{ x: true }}
-          columns={[
-            {
-              title: "Date",
-              dataIndex: "expense_date",
-              render: (v: string) => dayjs(v).format("DD MMM YYYY"),
-            },
-            { title: "Note", dataIndex: "note" },
-            {
-              title: "Amount",
-              dataIndex: "amount",
-              render: (v: number) => Number(v).toLocaleString(),
-            },
-            {
-              title: "",
-              render: (_, e: Expense) => (
-                <Popconfirm title="Delete this expense?" onConfirm={() => removeExpense(e.id)}>
-                  <Button danger type="text" size="small" icon={<DeleteOutlined />} />
-                </Popconfirm>
-              ),
-            },
-          ]}
-        />
-      </Card>
+      </Modal>
     </>
   );
 }
