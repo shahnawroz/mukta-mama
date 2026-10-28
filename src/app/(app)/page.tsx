@@ -2,23 +2,43 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { App, Button, Card, Empty, Progress, Skeleton, Tag } from "antd";
-import { BankOutlined, MinusCircleOutlined, WalletOutlined } from "@ant-design/icons";
-import dayjs from "dayjs";
+import { App, Button, Card, DatePicker, Empty, Progress, Skeleton, Table, Tag } from "antd";
+import {
+  BankOutlined,
+  LeftOutlined,
+  MinusCircleOutlined,
+  RightOutlined,
+  WalletOutlined,
+} from "@ant-design/icons";
+import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { useIsMobile } from "@/lib/useIsMobile";
 import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
 type Unit = { id: string; kind: Kind; room_number: string; rent: number; advance: number };
-type Payment = { room_id: string; amount: number; advance_applied: number };
+type Payment = {
+  room_id: string;
+  month: string;
+  paid_at: string;
+  amount: number;
+  advance_applied: number;
+};
+type Dated = { date: string; amount: number };
 
 const fmt = (v: number) => Number(v).toLocaleString();
+const sum = (rows: { amount: number }[]) => rows.reduce((s, r) => s + Number(r.amount), 0);
 
 function sumOf(units: Unit[], paidByUnit: Map<string, number>) {
   const total = units.reduce((s, u) => s + Number(u.rent), 0);
-  const paidUnits = units.filter((u) => paidByUnit.has(u.id));
-  const paid = paidUnits.reduce((s, u) => s + (paidByUnit.get(u.id) ?? 0), 0);
-  return { count: units.length, paidCount: paidUnits.length, total, paid };
+  const paid = units.reduce(
+    (s, u) => s + Math.min(paidByUnit.get(u.id) ?? 0, Number(u.rent)),
+    0,
+  );
+  const paidCount = units.filter(
+    (u) => Number(u.rent) > 0 && (paidByUnit.get(u.id) ?? 0) >= Number(u.rent),
+  ).length;
+  return { count: units.length, paidCount, total, paid };
 }
 
 function GroupRow({
@@ -54,66 +74,122 @@ function GroupRow({
 export default function DashboardPage() {
   const { message } = App.useApp();
   const router = useRouter();
-  const [units, setUnits] = useState<Unit[] | null>(null);
+  const isMobile = useIsMobile();
+  const [month, setMonth] = useState<Dayjs>(dayjs());
+  const [loaded, setLoaded] = useState(false);
+  const [units, setUnits] = useState<Unit[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
-  const [collectedAll, setCollectedAll] = useState(0);
-  const [inBank, setInBank] = useState(0);
-  const [electricity, setElectricity] = useState(0);
-  const [spent, setSpent] = useState(0);
-  const [spentMonth, setSpentMonth] = useState(0);
-  const month = dayjs();
+  const [transfers, setTransfers] = useState<Dated[]>([]);
+  const [expenses, setExpenses] = useState<Dated[]>([]);
+  const [utilities, setUtilities] = useState<Dated[]>([]);
+  const [moves, setMoves] = useState<(Dated & { dest: string })[]>([]);
+  const [cashRefunds, setCashRefunds] = useState<Dated[]>([]);
 
+  // Everything is loaded once; changing the month only re-does the sums below.
   useEffect(() => {
-    const key = dayjs().format("YYYY-MM-01");
     const supabase = createClient();
     Promise.all([
       supabase.from("rooms").select("id, kind, room_number, rent, advance").order("room_number"),
-      supabase.from("payments").select("room_id, amount, advance_applied").eq("month", key),
-      supabase.from("payments").select("amount, advance_applied"),
-      supabase.from("bank_transfers").select("amount"),
+      supabase.from("payments").select("room_id, month, paid_at, amount, advance_applied"),
+      supabase.from("bank_transfers").select("amount, transfer_date"),
       supabase.from("expenses").select("amount, expense_date"),
+      supabase.from("electricity_deposits").select("amount, deposit_date"),
+      supabase.from("advance_moves").select("amount, destination, move_date"),
       supabase
-        .from("electricity_deposits")
-        .select("amount")
-        .gte("deposit_date", key)
-        .lt("deposit_date", dayjs(key).add(1, "month").format("YYYY-MM-DD")),
-    ]).then(([rooms, pays, allPays, transfers, expenses, power]) => {
+        .from("advance_returns")
+        .select("amount, return_date")
+        .eq("kind", "refund")
+        .eq("paid_from", "cash"),
+    ]).then(([rooms, pays, tr, ex, ut, mv, rf]) => {
       const err =
-        rooms.error ?? pays.error ?? allPays.error ?? transfers.error ?? expenses.error ?? power.error;
+        rooms.error ?? pays.error ?? tr.error ?? ex.error ?? ut.error ?? mv.error ?? rf.error;
       if (err) message.error(err.message);
-      const sum = (rows: { amount: number }[] | null) =>
-        (rows ?? []).reduce((s, r) => s + Number(r.amount), 0);
       setUnits(rooms.data ?? []);
       setPayments(pays.data ?? []);
-      setCollectedAll(
-        (allPays.data ?? []).reduce((s, r) => s + Number(r.amount) + Number(r.advance_applied), 0),
-      );
-      setInBank(sum(transfers.data));
-      setSpent(sum(expenses.data));
-      setSpentMonth(sum((expenses.data ?? []).filter((e) => e.expense_date >= key)));
-      setElectricity(sum(power.data));
+      setTransfers((tr.data ?? []).map((r) => ({ date: r.transfer_date, amount: r.amount })));
+      setExpenses((ex.data ?? []).map((r) => ({ date: r.expense_date, amount: r.amount })));
+      setUtilities((ut.data ?? []).map((r) => ({ date: r.deposit_date, amount: r.amount })));
+      setMoves((mv.data ?? []).map((r) => ({ date: r.move_date, amount: r.amount, dest: r.destination })));
+      setCashRefunds((rf.data ?? []).map((r) => ({ date: r.return_date, amount: r.amount })));
+      setLoaded(true);
     });
   }, [message]);
 
-  const loading = units === null;
-  const all = units ?? [];
-  const paidByUnit = new Map(
-    payments.map((p) => [p.room_id, Number(p.amount) + Number(p.advance_applied)]),
+  const loading = !loaded;
+  const key = month.format("YYYY-MM-01");
+  const inMonth = (d: string) => dayjs(d).isSame(month, "month");
+  const upToMonthEnd = (d: string) => !dayjs(d).isAfter(month.endOf("month"));
+  const rentOf = (p: Payment) => Number(p.amount) + Number(p.advance_applied);
+
+  // Rent for the selected month. A room can have several payments (part payments).
+  const paidByUnit = new Map<string, number>();
+  payments
+    .filter((p) => p.month === key)
+    .forEach((p) => paidByUnit.set(p.room_id, (paidByUnit.get(p.room_id) ?? 0) + rentOf(p)));
+
+  const overall = sumOf(units, paidByUnit);
+  const rooms = sumOf(units.filter((u) => u.kind === "room"), paidByUnit);
+  const shops = sumOf(units.filter((u) => u.kind === "shop"), paidByUnit);
+  const unpaid = units.filter(
+    (u) => Number(u.rent) > 0 && (paidByUnit.get(u.id) ?? 0) < Number(u.rent),
   );
-  const overall = sumOf(all, paidByUnit);
-  const rooms = sumOf(all.filter((u) => u.kind === "room"), paidByUnit);
-  const shops = sumOf(all.filter((u) => u.kind === "shop"), paidByUnit);
-  const unpaid = all.filter((u) => !paidByUnit.has(u.id));
-  const advance = all.reduce((s, u) => s + Number(u.advance), 0);
   const percent = overall.total ? Math.round((overall.paid / overall.total) * 100) : 0;
+
+  // Cash on hand and bank as they stood at the end of the selected month.
+  // Advance only joins cash or the bank once it is moved; a refund paid out of cash takes it out.
+  const cash =
+    payments.filter((p) => upToMonthEnd(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
+    sum(transfers.filter((t) => upToMonthEnd(t.date))) -
+    sum(expenses.filter((e) => upToMonthEnd(e.date))) +
+    sum(moves.filter((m) => m.dest === "cash" && upToMonthEnd(m.date))) -
+    sum(cashRefunds.filter((r) => upToMonthEnd(r.date)));
+  const inBank =
+    sum(transfers.filter((t) => upToMonthEnd(t.date))) +
+    sum(moves.filter((m) => m.dest === "bank" && upToMonthEnd(m.date)));
+  const advance = units.reduce((s, u) => s + Number(u.advance), 0);
+
+  // Money movements inside the selected month.
+  const collectedM = payments.filter((p) => inMonth(p.paid_at)).reduce((s, p) => s + rentOf(p), 0);
+  const expensesM = sum(expenses.filter((e) => inMonth(e.date)));
+  const utilitiesM = sum(utilities.filter((u) => inMonth(u.date)));
+  const bankM = sum(transfers.filter((t) => inMonth(t.date)));
+
+  const isCurrent = month.isSame(dayjs(), "month");
 
   return (
     <>
-      <PageHeader title="Dashboard" subtitle={`${month.format("MMMM YYYY")} overview`} />
+      <PageHeader
+        title="Dashboard"
+        subtitle={`${month.format("MMMM YYYY")} overview`}
+        extra={
+          <div className="month-nav">
+            <Button
+              icon={<LeftOutlined />}
+              onClick={() => setMonth(month.subtract(1, "month"))}
+              aria-label="Previous month"
+            />
+            <DatePicker
+              picker="month"
+              allowClear={false}
+              value={month}
+              onChange={(d) => d && setMonth(d)}
+              format="MMMM YYYY"
+              style={{ width: 150 }}
+            />
+            <Button
+              icon={<RightOutlined />}
+              onClick={() => setMonth(month.add(1, "month"))}
+              aria-label="Next month"
+            />
+          </div>
+        }
+      />
 
       <div className="hero">
-        <div className="hero-label">Cash on hand</div>
-        <div className="hero-amount">{loading ? "..." : fmt(collectedAll - inBank - spent)}</div>
+        <div className="hero-label">
+          Cash on hand {isCurrent ? "now" : `at the end of ${month.format("MMMM YYYY")}`}
+        </div>
+        <div className="hero-amount">{loading ? "..." : fmt(cash)}</div>
         <div className="hero-grid">
           <div className="hero-mini">
             <span>In bank</span>
@@ -124,12 +200,12 @@ export default function DashboardPage() {
             <b>{fmt(advance)}</b>
           </div>
           <div className="hero-mini">
-            <span>Expenses this month</span>
-            <b>{fmt(spentMonth)}</b>
+            <span>Expenses in {month.format("MMM")}</span>
+            <b>{fmt(expensesM)}</b>
           </div>
           <div className="hero-mini">
-            <span>Electricity this month</span>
-            <b>{fmt(electricity)}</b>
+            <span>Utilities in {month.format("MMM")}</span>
+            <b>{fmt(utilitiesM)}</b>
           </div>
         </div>
       </div>
@@ -146,7 +222,28 @@ export default function DashboardPage() {
         </Button>
       </div>
 
-      <div className="section-title">Rent this month</div>
+      <div className="section-title">{month.format("MMMM YYYY")} in numbers</div>
+      <div className="unit-list">
+        {[
+          { label: "Rent due this month", value: overall.total, color: "#0f172a" },
+          { label: "Rent received", value: collectedM, color: "#16a34a" },
+          { label: "Expenses", value: expensesM, color: "#e11d48" },
+          {
+            label: "Net income (received - expenses)",
+            value: collectedM - expensesM,
+            color: collectedM - expensesM >= 0 ? "#16a34a" : "#e11d48",
+          },
+          { label: "Utilities", value: utilitiesM, color: "#0f172a" },
+          { label: "Sent to bank", value: bankM, color: "#4f46e5" },
+        ].map((x) => (
+          <div key={x.label} className="row-card">
+            <span style={{ color: "#64748b" }}>{x.label}</span>
+            <b style={{ fontSize: 18, color: x.color }}>{loading ? "..." : fmt(x.value)}</b>
+          </div>
+        ))}
+      </div>
+
+      <div className="section-title">Rent for {month.format("MMMM YYYY")}</div>
       <Card className="soft-card">
         {loading ? (
           <Skeleton active />
@@ -170,42 +267,116 @@ export default function DashboardPage() {
       </Card>
 
       <div className="section-title">Waiting for rent {!loading && `(${unpaid.length})`}</div>
-      {loading ? (
-        <Card className="soft-card">
+      <Card className="soft-card" styles={{ body: { padding: loading || unpaid.length === 0 ? 24 : 0 } }}>
+        {loading ? (
           <Skeleton active />
-        </Card>
-      ) : unpaid.length === 0 ? (
-        <Card className="soft-card">
-          <Empty description="Everything collected this month" image={Empty.PRESENTED_IMAGE_SIMPLE} />
-        </Card>
-      ) : (
-        <div className="unit-list">
-          {unpaid.slice(0, 12).map((u) => (
-            <div
-              key={u.id}
-              className="unit-card due"
-              style={{ cursor: "pointer" }}
-              onClick={() => router.push("/rent")}
-            >
-              <div>
-                <div className="unit-title">
-                  <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
-                    {u.kind === "shop" ? "Shop" : "Room"}
-                  </Tag>
-                  <span className="unit-num">{u.room_number}</span>
+        ) : unpaid.length === 0 ? (
+          <Empty
+            description={`Everything collected for ${month.format("MMMM YYYY")}`}
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+          />
+        ) : isMobile ? (
+          <div>
+            {unpaid.slice(0, 10).map((u, i) => {
+              const part = (paidByUnit.get(u.id) ?? 0) > 0;
+              return (
+                <div
+                  key={u.id}
+                  onClick={() => router.push("/rent")}
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "12px 16px",
+                    cursor: "pointer",
+                    borderTop: i === 0 ? "none" : "1px solid #f1f5f9",
+                  }}
+                >
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                      {u.kind === "shop" ? "Shop" : "Room"}
+                    </Tag>
+                    <b>{u.room_number}</b>
+                  </span>
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <b style={{ color: "#e11d48" }}>{fmt(Number(u.rent) - (paidByUnit.get(u.id) ?? 0))}</b>
+                    {part && (
+                      <Tag color="orange" style={{ margin: 0 }}>
+                        Part
+                      </Tag>
+                    )}
+                  </span>
                 </div>
-                <div className="unit-rent">{fmt(u.rent)}</div>
+              );
+            })}
+            {unpaid.length > 10 && (
+              <div style={{ padding: 12, textAlign: "center", borderTop: "1px solid #f1f5f9" }}>
+                <Button type="link" onClick={() => router.push("/rent")}>
+                  View all {unpaid.length}
+                </Button>
               </div>
-              <Tag color="red">Due</Tag>
-            </div>
-          ))}
-          {unpaid.length > 12 && (
-            <Button size="large" onClick={() => router.push("/rent")} style={{ height: "auto" }}>
-              View all {unpaid.length}
-            </Button>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        ) : (
+          <Table<Unit>
+            rowKey="id"
+            dataSource={unpaid}
+            size="small"
+            pagination={{ pageSize: 10, hideOnSinglePage: true, showSizeChanger: false }}
+            onRow={() => ({ onClick: () => router.push("/rent"), style: { cursor: "pointer" } })}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "room_number",
+                sorter: (a, b) =>
+                  a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
+                render: (_, u) => (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                      {u.kind === "shop" ? "Shop" : "Room"}
+                    </Tag>
+                    <b>{u.room_number}</b>
+                  </span>
+                ),
+              },
+              { title: "Rent", dataIndex: "rent", align: "right", render: (v: number) => fmt(v) },
+              {
+                title: "Paid",
+                align: "right",
+                render: (_, u) =>
+                  (paidByUnit.get(u.id) ?? 0) > 0 ? (
+                    <span style={{ color: "#16a34a" }}>{fmt(paidByUnit.get(u.id) ?? 0)}</span>
+                  ) : (
+                    <span style={{ color: "#cbd5e1" }}>-</span>
+                  ),
+              },
+              {
+                title: "Due",
+                align: "right",
+                render: (_, u) => (
+                  <b style={{ color: "#e11d48" }}>
+                    {fmt(Number(u.rent) - (paidByUnit.get(u.id) ?? 0))}
+                  </b>
+                ),
+              },
+              {
+                title: "Status",
+                render: (_, u) =>
+                  (paidByUnit.get(u.id) ?? 0) > 0 ? (
+                    <Tag color="orange" style={{ margin: 0 }}>
+                      Part paid
+                    </Tag>
+                  ) : (
+                    <Tag color="red" style={{ margin: 0 }}>
+                      Due
+                    </Tag>
+                  ),
+              },
+            ]}
+          />
+        )}
+      </Card>
     </>
   );
 }

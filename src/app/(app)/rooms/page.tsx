@@ -6,6 +6,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Dropdown,
   Empty,
   Form,
   Input,
@@ -15,18 +16,21 @@ import {
   Popconfirm,
   Segmented,
   Skeleton,
+  Table,
   Tag,
   Tooltip,
 } from "antd";
 import {
   DeleteOutlined,
+  DownOutlined,
   EditOutlined,
+  MoreOutlined,
   PlusOutlined,
-  RollbackOutlined,
   SearchOutlined,
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { useIsMobile } from "@/lib/useIsMobile";
 import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
@@ -35,23 +39,38 @@ type NewRoom = { kind: Kind; room_number: string; rent?: number; advance?: numbe
 type EditValues = { rent: number; advance: number };
 type ReturnValues = {
   mode: "applied" | "refund";
+  paid_from: "advance" | "cash";
   amount: number;
   return_date: Dayjs;
   month: Dayjs;
+  note?: string;
+};
+type MoveValues = {
+  destination: "cash" | "bank";
+  amount: number;
+  move_date: Dayjs;
   note?: string;
 };
 
 const fmt = (v: number) => Number(v).toLocaleString();
 const labelOf = (r: { kind: Kind; room_number: string }) =>
   `${r.kind === "shop" ? "Shop" : "Room"} ${r.room_number}`;
+const TypeTag = ({ kind }: { kind: Kind }) => (
+  <Tag color={kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+    {kind === "shop" ? "Shop" : "Room"}
+  </Tag>
+);
 
 export default function RoomsPage() {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [kind, setKind] = useState<"all" | Kind>("all");
   const [search, setSearch] = useState("");
+  // Per room: advance already moved to cash/bank, less refunds that were paid out of cash.
+  const [movedByRoom, setMovedByRoom] = useState<Map<string, number>>(new Map());
 
   const [addOpen, setAddOpen] = useState(false);
   const numberRef = useRef<InputRef>(null);
@@ -60,18 +79,39 @@ export default function RoomsPage() {
   const [editRoom, setEditRoom] = useState<Room | null>(null);
   const [editForm] = Form.useForm<EditValues>();
 
+  const [moveRoom, setMoveRoom] = useState<Room | null>(null);
+  const [moveForm] = Form.useForm<MoveValues>();
+
   const [returnRoom, setReturnRoom] = useState<Room | null>(null);
   const [returnForm] = Form.useForm<ReturnValues>();
   const returnMode = Form.useWatch("mode", returnForm);
 
   const load = useCallback(async () => {
-    const { data, error } = await createClient()
-      .from("rooms")
-      .select("id, kind, room_number, rent, advance")
-      .order("kind", { ascending: false })
-      .order("room_number");
-    if (error) message.error(error.message);
-    else setRooms(data ?? []);
+    const supabase = createClient();
+    const [r, m, ret] = await Promise.all([
+      supabase
+        .from("rooms")
+        .select("id, kind, room_number, rent, advance")
+        .order("kind", { ascending: false })
+        .order("room_number"),
+      supabase.from("advance_moves").select("room_id, amount"),
+      supabase
+        .from("advance_returns")
+        .select("room_id, amount")
+        .eq("kind", "refund")
+        .eq("paid_from", "cash"),
+    ]);
+    const err = r.error ?? m.error ?? ret.error;
+    if (err) message.error(err.message);
+    setRooms(r.data ?? []);
+    const moved = new Map<string, number>();
+    (m.data ?? []).forEach((x) => {
+      if (x.room_id) moved.set(x.room_id, (moved.get(x.room_id) ?? 0) + Number(x.amount));
+    });
+    (ret.data ?? []).forEach((x) => {
+      if (x.room_id) moved.set(x.room_id, (moved.get(x.room_id) ?? 0) - Number(x.amount));
+    });
+    setMovedByRoom(moved);
     setLoading(false);
   }, [message]);
 
@@ -79,6 +119,10 @@ export default function RoomsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     load();
   }, [load]);
+
+  // Advance held for this room that has not been moved to cash or the bank yet.
+  const notMoved = (room: Room) =>
+    Math.max(Number(room.advance) - (movedByRoom.get(room.id) ?? 0), 0);
 
   async function addRoom(values: NewRoom) {
     setSaving(true);
@@ -97,11 +141,6 @@ export default function RoomsPage() {
     load();
   }
 
-  function openEdit(room: Room) {
-    editForm.setFieldsValue({ rent: Number(room.rent), advance: Number(room.advance) });
-    setEditRoom(room);
-  }
-
   async function saveEdit(values: EditValues) {
     const room = editRoom!;
     setSaving(true);
@@ -116,15 +155,28 @@ export default function RoomsPage() {
     load();
   }
 
-  function openReturn(room: Room) {
-    const mode = room.kind === "room" ? "applied" : "refund";
-    returnForm.setFieldsValue({
-      mode,
-      amount: mode === "applied" ? Math.min(Number(room.advance), Number(room.rent)) : undefined,
-      return_date: dayjs(),
-      month: dayjs(),
-    });
-    setReturnRoom(room);
+  async function moveAdvance(values: MoveValues) {
+    const room = moveRoom!;
+    setSaving(true);
+    const { error } = await createClient()
+      .from("advance_moves")
+      .insert({
+        room_id: room.id,
+        room_label: labelOf(room),
+        amount: values.amount,
+        destination: values.destination,
+        move_date: values.move_date.format("YYYY-MM-DD"),
+        note: values.note?.trim() || null,
+      });
+    setSaving(false);
+    if (error) return message.error(error.message);
+    message.success(
+      `${fmt(values.amount)} of ${labelOf(room)} advance moved to ${
+        values.destination === "bank" ? "the bank" : "cash on hand"
+      }`,
+    );
+    setMoveRoom(null);
+    load();
   }
 
   function onModeChange(mode: "applied" | "refund") {
@@ -145,13 +197,35 @@ export default function RoomsPage() {
     if (applied) {
       // Settle (part of) that month's rent from the advance; the rest is cash from the tenant.
       const month = values.month.format("YYYY-MM-01");
+      const { data: existing, error: existingError } = await supabase
+        .from("payments")
+        .select("amount, advance_applied")
+        .eq("room_id", room.id)
+        .eq("month", month);
+      if (existingError) {
+        setSaving(false);
+        return message.error(existingError.message);
+      }
+      const alreadyPaid = (existing ?? []).reduce(
+        (s, p) => s + Number(p.amount) + Number(p.advance_applied),
+        0,
+      );
+      const due = Number(room.rent) - alreadyPaid;
+      if (due <= 0) {
+        setSaving(false);
+        return message.error(`Rent for ${values.month.format("MMMM YYYY")} is already paid`);
+      }
+      if (values.amount > due) {
+        setSaving(false);
+        return message.error(`Only ${fmt(due)} is still due for ${values.month.format("MMMM YYYY")}`);
+      }
       const { data: auth } = await supabase.auth.getUser();
       const { data: payment, error } = await supabase
         .from("payments")
         .insert({
           room_id: room.id,
           month,
-          amount: Number(room.rent) - values.amount,
+          amount: 0,
           advance_applied: values.amount,
           paid_at: new Date().toISOString(),
           paid_by: auth.user?.email ?? "admin",
@@ -160,11 +234,7 @@ export default function RoomsPage() {
         .single();
       if (error) {
         setSaving(false);
-        return message.error(
-          error.code === "23505"
-            ? `Rent for ${values.month.format("MMMM YYYY")} is already paid`
-            : error.message,
-        );
+        return message.error(error.message);
       }
       paymentId = payment.id;
     }
@@ -183,6 +253,7 @@ export default function RoomsPage() {
       room_id: room.id,
       room_label: labelOf(room),
       kind: applied ? "applied" : "refund",
+      paid_from: applied ? "advance" : values.paid_from,
       payment_id: paymentId,
       amount: values.amount,
       return_date: (applied ? dayjs() : values.return_date).format("YYYY-MM-DD"),
@@ -210,18 +281,44 @@ export default function RoomsPage() {
     load();
   }
 
+  const returnInitial = returnRoom
+    ? {
+        mode: returnRoom.kind === "room" ? "applied" : "refund",
+        paid_from: notMoved(returnRoom) >= Number(returnRoom.advance) ? "advance" : "cash",
+        amount:
+          returnRoom.kind === "room"
+            ? Math.min(Number(returnRoom.advance), Number(returnRoom.rent))
+            : undefined,
+        return_date: dayjs(),
+        month: dayjs(),
+      }
+    : undefined;
+
   const q = search.trim().toLowerCase();
   const visible = rooms
     .filter((r) => kind === "all" || r.kind === kind)
     .filter((r) => !q || r.room_number.toLowerCase().includes(q));
   const roomCount = rooms.filter((r) => r.kind === "room").length;
   const shopCount = rooms.length - roomCount;
+  const totalAdvance = rooms.reduce((sum, r) => sum + Number(r.advance), 0);
+
+  // The advance menu only exists for rooms and shops that hold an advance.
+  const advanceMenu = (r: Room) => ({
+    items: [
+      { key: "move", label: "Move to cash or bank", disabled: notMoved(r) <= 0 },
+      { key: "return", label: r.kind === "room" ? "Use for rent / give back" : "Give back" },
+    ],
+    onClick: ({ key }: { key: string }) => {
+      if (key === "move") setMoveRoom(r);
+      else setReturnRoom(r);
+    },
+  });
 
   return (
     <>
       <PageHeader
         title="Rooms & Shops"
-        subtitle={`${roomCount} rooms, ${shopCount} shops`}
+        subtitle={`${roomCount} rooms, ${shopCount} shops - advance held ${fmt(totalAdvance)}`}
         extra={
           <Button
             type="primary"
@@ -274,15 +371,13 @@ export default function RoomsPage() {
             )}
           </Empty>
         </Card>
-      ) : (
+      ) : isMobile ? (
         <div className="unit-list">
           {visible.map((r) => (
             <div key={r.id} className="unit-card plain">
               <div>
                 <div className="unit-title">
-                  <Tag color={r.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
-                    {r.kind === "shop" ? "Shop" : "Room"}
-                  </Tag>
+                  <TypeTag kind={r.kind} />
                   <span className="unit-num">{r.room_number}</span>
                 </div>
                 <div className="unit-stats">
@@ -294,25 +389,105 @@ export default function RoomsPage() {
                   </span>
                 </div>
               </div>
-              <div className="unit-tools">
-                <Tooltip title="Edit rent / advance">
-                  <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(r)} />
-                </Tooltip>
-                <Tooltip title="Use / return advance">
-                  <Button
-                    type="text"
-                    icon={<RollbackOutlined />}
-                    disabled={Number(r.advance) <= 0}
-                    onClick={() => openReturn(r)}
-                  />
-                </Tooltip>
-                <Popconfirm title={`Delete ${labelOf(r)}?`} onConfirm={() => removeRoom(r)}>
-                  <Button type="text" danger icon={<DeleteOutlined />} />
-                </Popconfirm>
-              </div>
+              <Dropdown
+                trigger={["click"]}
+                menu={{
+                  items: [
+                    { key: "edit", label: "Edit rent / advance" },
+                    ...(Number(r.advance) > 0
+                      ? [
+                          { key: "move", label: "Move advance to cash or bank", disabled: notMoved(r) <= 0 },
+                          { key: "return", label: r.kind === "room" ? "Use advance for rent / give back" : "Give advance back" },
+                        ]
+                      : []),
+                    { key: "delete", label: "Delete", danger: true },
+                  ],
+                  onClick: ({ key }) => {
+                    if (key === "edit") setEditRoom(r);
+                    else if (key === "move") setMoveRoom(r);
+                    else if (key === "return") setReturnRoom(r);
+                    else
+                      Modal.confirm({
+                        title: `Delete ${labelOf(r)}?`,
+                        okText: "Delete",
+                        okButtonProps: { danger: true },
+                        onOk: () => removeRoom(r),
+                      });
+                  },
+                }}
+              >
+                <Button type="text" icon={<MoreOutlined />} aria-label="Actions" />
+              </Dropdown>
             </div>
           ))}
         </div>
+      ) : (
+        <Card className="soft-card" styles={{ body: { padding: 0 } }}>
+          <Table<Room>
+            rowKey="id"
+            dataSource={visible}
+            size="middle"
+            pagination={{ pageSize: 50, hideOnSinglePage: true, showSizeChanger: false }}
+            columns={[
+              {
+                title: "Name",
+                dataIndex: "room_number",
+                sorter: (a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
+                render: (_, r) => (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <TypeTag kind={r.kind} />
+                    <b>{r.room_number}</b>
+                  </span>
+                ),
+              },
+              {
+                title: "Rent",
+                dataIndex: "rent",
+                align: "right",
+                sorter: (a, b) => Number(a.rent) - Number(b.rent),
+                render: (v: number) => fmt(v),
+              },
+              {
+                title: "Advance",
+                dataIndex: "advance",
+                align: "right",
+                sorter: (a, b) => Number(a.advance) - Number(b.advance),
+                render: (v: number, r) => (
+                  <div>
+                    {Number(v) > 0 ? <b>{fmt(v)}</b> : <span style={{ color: "#94a3b8" }}>-</span>}
+                    {Number(v) > 0 && notMoved(r) < Number(v) && (
+                      <div style={{ fontSize: 12, color: "#64748b" }}>
+                        {fmt(notMoved(r))} not moved
+                      </div>
+                    )}
+                  </div>
+                ),
+              },
+              {
+                title: "",
+                align: "right",
+                width: 190,
+                render: (_, r) => (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 2 }}>
+                    {Number(r.advance) > 0 && (
+                      <Dropdown menu={advanceMenu(r)} trigger={["click"]}>
+                        <Button size="small">
+                          Advance <DownOutlined />
+                        </Button>
+                      </Dropdown>
+                    )}
+                    <Tooltip title="Edit rent / advance">
+                      <Button type="text" icon={<EditOutlined />} onClick={() => setEditRoom(r)} />
+                    </Tooltip>
+                    <Popconfirm title={`Delete ${labelOf(r)}?`} onConfirm={() => removeRoom(r)}>
+                      <Button type="text" danger icon={<DeleteOutlined />} />
+                    </Popconfirm>
+                  </span>
+                ),
+              },
+            ]}
+          />
+        </Card>
       )}
 
       <Modal
@@ -369,8 +544,18 @@ export default function RoomsPage() {
         okText="Save"
         confirmLoading={saving}
         centered
+        destroyOnHidden
       >
-        <Form form={editForm} layout="vertical" onFinish={saveEdit} autoComplete="off">
+        <Form
+          key={editRoom?.id}
+          form={editForm}
+          layout="vertical"
+          onFinish={saveEdit}
+          initialValues={
+            editRoom ? { rent: Number(editRoom.rent), advance: Number(editRoom.advance) } : undefined
+          }
+          autoComplete="off"
+        >
           <Form.Item name="rent" label="Monthly rent">
             <InputNumber size="large" min={0} style={{ width: "100%" }} />
           </Form.Item>
@@ -381,26 +566,94 @@ export default function RoomsPage() {
       </Modal>
 
       <Modal
+        title={moveRoom ? `Move advance - ${labelOf(moveRoom)}` : ""}
+        open={!!moveRoom}
+        onCancel={() => setMoveRoom(null)}
+        onOk={() => moveForm.submit()}
+        okText="Move"
+        confirmLoading={saving}
+        centered
+        destroyOnHidden
+      >
+        <p>
+          Advance held: <b>{fmt(moveRoom?.advance ?? 0)}</b> - not moved yet:{" "}
+          <b>{moveRoom ? fmt(notMoved(moveRoom)) : 0}</b>. Moved money is added to cash on hand or
+          the bank, so you can spend it. The tenant may still be owed it back.
+        </p>
+        <Form
+          key={moveRoom?.id}
+          form={moveForm}
+          layout="vertical"
+          onFinish={moveAdvance}
+          initialValues={{
+            destination: "cash",
+            move_date: dayjs(),
+            amount: moveRoom ? notMoved(moveRoom) : undefined,
+          }}
+          autoComplete="off"
+        >
+          <Form.Item name="destination" label="Move to">
+            <Segmented
+              block
+              options={[
+                { label: "Cash on hand", value: "cash" },
+                { label: "Bank", value: "bank" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="amount"
+            label="Amount"
+            rules={[
+              { required: true, message: "Enter amount" },
+              {
+                validator: (_, v: number | undefined) =>
+                  moveRoom && v != null && v > notMoved(moveRoom)
+                    ? Promise.reject(new Error(`Only ${fmt(notMoved(moveRoom))} is available to move`))
+                    : Promise.resolve(),
+              },
+            ]}
+          >
+            <InputNumber size="large" min={1} style={{ width: "100%" }} autoFocus />
+          </Form.Item>
+          <Form.Item name="move_date" label="Date" rules={[{ required: true }]}>
+            <DatePicker allowClear={false} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item name="note" label="Note (optional)">
+            <Input />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
         title={returnRoom ? `Advance - ${labelOf(returnRoom)}` : ""}
         open={!!returnRoom}
         onCancel={() => setReturnRoom(null)}
         onOk={() => returnForm.submit()}
-        okText={returnMode === "applied" ? "Deduct from rent" : "Return cash"}
+        okText={returnMode === "applied" ? "Deduct from rent" : "Return advance"}
         confirmLoading={saving}
         centered
+        destroyOnHidden
       >
         <p>
           Advance held: <b>{fmt(returnRoom?.advance ?? 0)}</b> - Rent:{" "}
           <b>{fmt(returnRoom?.rent ?? 0)}</b>
         </p>
-        <Form form={returnForm} layout="vertical" onFinish={returnAdvance} autoComplete="off">
+        <Form
+          key={returnRoom?.id}
+          form={returnForm}
+          layout="vertical"
+          onFinish={returnAdvance}
+          initialValues={returnInitial}
+          autoComplete="off"
+        >
           <Form.Item name="mode">
             <Segmented
               block
               onChange={onModeChange}
               options={[
                 { label: "Deduct from rent", value: "applied" },
-                { label: "Return cash", value: "refund" },
+                { label: "Give back", value: "refund" },
               ]}
             />
           </Form.Item>
@@ -413,22 +666,47 @@ export default function RoomsPage() {
               <DatePicker allowClear={false} style={{ width: "100%" }} />
             </Form.Item>
           )}
+          {returnMode === "refund" && (
+            <Form.Item
+              name="paid_from"
+              label="Paid from"
+              extra="Use cash on hand if you already moved this advance into cash or the bank."
+            >
+              <Segmented
+                block
+                options={[
+                  { label: "Advance not moved", value: "advance" },
+                  { label: "Cash on hand", value: "cash" },
+                ]}
+              />
+            </Form.Item>
+          )}
           <Form.Item
             name="amount"
             label={returnMode === "applied" ? "Amount deducted" : "Amount returned"}
             extra={
               returnMode === "applied"
-                ? "If this is less than the rent, the tenant pays the rest in cash."
-                : "Security money handed back. It does not change cash on hand."
+                ? "If this is less than the rent due, the rest stays due on the Rent page."
+                : "Security money handed back to the tenant."
             }
             rules={[
               { required: true, message: "Enter amount" },
               {
                 validator: (_, v: number | undefined) => {
-                  if (v == null) return Promise.resolve();
-                  if (v > Number(returnRoom?.advance ?? 0))
+                  if (v == null || !returnRoom) return Promise.resolve();
+                  if (v > Number(returnRoom.advance))
                     return Promise.reject(new Error("More than the advance held"));
-                  if (returnMode === "applied" && v > Number(returnRoom?.rent ?? 0))
+                  if (
+                    returnMode === "refund" &&
+                    returnForm.getFieldValue("paid_from") === "advance" &&
+                    v > notMoved(returnRoom)
+                  )
+                    return Promise.reject(
+                      new Error(
+                        `Only ${fmt(notMoved(returnRoom))} of this advance is not moved yet. Choose "Cash on hand".`,
+                      ),
+                    );
+                  if (returnMode === "applied" && v > Number(returnRoom.rent))
                     return Promise.reject(new Error("More than the monthly rent"));
                   return Promise.resolve();
                 },

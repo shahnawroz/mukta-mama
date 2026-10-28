@@ -15,7 +15,7 @@ import {
   Popconfirm,
   Skeleton,
 } from "antd";
-import { DeleteOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
+import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
 import PageHeader from "@/components/PageHeader";
@@ -32,6 +32,7 @@ export default function ExpensesPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<Expense | null>(null);
   const noteRef = useRef<InputRef>(null);
   const [form] = Form.useForm<FormValues>();
 
@@ -51,20 +52,43 @@ export default function ExpensesPage() {
     load();
   }, [load]);
 
-  async function addExpense(values: FormValues) {
+  function openAdd() {
+    setEditing(null);
+    setOpen(true);
+    setTimeout(() => noteRef.current?.focus(), 100);
+  }
+
+  function openEdit(e: Expense) {
+    setEditing(e);
+    setOpen(true);
+  }
+
+  function closeModal() {
+    setOpen(false);
+    setEditing(null);
+  }
+
+  async function saveExpense(values: FormValues) {
     setSaving(true);
-    const { error } = await createClient()
-      .from("expenses")
-      .insert({
-        amount: values.amount,
-        expense_date: values.expense_date.format("YYYY-MM-DD"),
-        note: values.note.trim(),
-      });
+    const row = {
+      amount: values.amount,
+      expense_date: values.expense_date.format("YYYY-MM-DD"),
+      note: values.note.trim(),
+    };
+    const supabase = createClient();
+    const { error } = editing
+      ? await supabase.from("expenses").update(row).eq("id", editing.id)
+      : await supabase.from("expenses").insert(row);
     setSaving(false);
     if (error) return message.error(error.message);
-    message.success(`Expense of ${fmt(values.amount)} added`);
-    form.resetFields(["amount", "note"]);
-    noteRef.current?.focus();
+    if (editing) {
+      message.success("Expense updated");
+      closeModal();
+    } else {
+      message.success(`Expense of ${fmt(values.amount)} added`);
+      form.resetFields(["amount", "note"]);
+      noteRef.current?.focus();
+    }
     load();
   }
 
@@ -77,6 +101,13 @@ export default function ExpensesPage() {
 
   const shown = expenses.filter((e) => dayjs(e.expense_date).isSame(month, "month"));
   const monthTotal = shown.reduce((s, e) => s + Number(e.amount), 0);
+  const initialValues = editing
+    ? {
+        note: editing.note,
+        amount: Number(editing.amount),
+        expense_date: dayjs(editing.expense_date),
+      }
+    : { expense_date: month.isSame(dayjs(), "month") ? dayjs() : month.startOf("month") };
 
   return (
     <>
@@ -88,10 +119,7 @@ export default function ExpensesPage() {
             type="primary"
             size="large"
             icon={<PlusOutlined />}
-            onClick={() => {
-              setOpen(true);
-              setTimeout(() => noteRef.current?.focus(), 100);
-            }}
+            onClick={openAdd}
           >
             Add expense
           </Button>
@@ -142,6 +170,7 @@ export default function ExpensesPage() {
               </div>
               <div className="row-side">
                 <div className="row-amount out">-{fmt(e.amount)}</div>
+                <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(e)} aria-label="Edit" />
                 <Popconfirm title="Delete this expense?" onConfirm={() => removeExpense(e.id)}>
                   <Button type="text" danger icon={<DeleteOutlined />} />
                 </Popconfirm>
@@ -151,15 +180,25 @@ export default function ExpensesPage() {
         </div>
       )}
 
-      <Modal title="Add expense" open={open} onCancel={() => setOpen(false)} footer={null} centered destroyOnHidden>
-        <p style={{ color: "#64748b", marginTop: 0 }}>
-          After you add one, the form clears so you can add the next. Close it when you are done.
-        </p>
+      <Modal
+        title={editing ? "Edit expense" : "Add expense"}
+        open={open}
+        onCancel={closeModal}
+        footer={null}
+        centered
+        destroyOnHidden
+      >
+        {!editing && (
+          <p style={{ color: "#64748b", marginTop: 0 }}>
+            After you add one, the form clears so you can add the next. Close it when you are done.
+          </p>
+        )}
         <Form
+          key={editing?.id ?? "new"}
           form={form}
           layout="vertical"
-          onFinish={addExpense}
-          initialValues={{ expense_date: dayjs() }}
+          onFinish={saveExpense}
+          initialValues={initialValues}
           autoComplete="off"
         >
           <Form.Item
@@ -176,7 +215,7 @@ export default function ExpensesPage() {
             <DatePicker allowClear={false} style={{ width: "100%" }} />
           </Form.Item>
           <Button type="primary" size="large" htmlType="submit" loading={saving} block>
-            Add
+            {editing ? "Save changes" : "Add"}
           </Button>
         </Form>
       </Modal>

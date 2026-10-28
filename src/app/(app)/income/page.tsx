@@ -12,12 +12,14 @@ import {
   Modal,
   Popconfirm,
   Skeleton,
+  Table,
   Tabs,
   Tag,
 } from "antd";
 import { BankOutlined, DeleteOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { useIsMobile } from "@/lib/useIsMobile";
 import PageHeader from "@/components/PageHeader";
 
 type Collection = {
@@ -30,9 +32,18 @@ type Collection = {
 };
 type Transfer = { id: string; amount: number; transfer_date: string; note: string | null };
 type Expense = { id: string; amount: number; expense_date: string; note: string };
+type AdvanceMove = {
+  id: string;
+  amount: number;
+  destination: "cash" | "bank";
+  move_date: string;
+  room_label: string | null;
+  note: string | null;
+};
 type AdvanceReturn = {
   id: string;
   kind: "refund" | "applied";
+  paid_from: "advance" | "cash";
   room_label: string;
   amount: number;
   return_date: string;
@@ -45,6 +56,7 @@ type MonthRow = {
   collected: number;
   bank: number;
   spent: number;
+  advance: number;
   closing: number;
 };
 type TransferValues = { amount: number; transfer_date: Dayjs; note?: string };
@@ -57,10 +69,12 @@ function EmptyList({ text }: { text: string }) {
 
 export default function IncomePage() {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [collections, setCollections] = useState<Collection[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [returns, setReturns] = useState<AdvanceReturn[]>([]);
+  const [moves, setMoves] = useState<AdvanceMove[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,7 +82,7 @@ export default function IncomePage() {
 
   const load = useCallback(async () => {
     const supabase = createClient();
-    const [c, t, x, r] = await Promise.all([
+    const [c, t, x, r, mv] = await Promise.all([
       supabase
         .from("payments")
         .select("id, amount, advance_applied, paid_at, month, rooms(kind, room_number)")
@@ -86,16 +100,22 @@ export default function IncomePage() {
         .order("created_at", { ascending: false }),
       supabase
         .from("advance_returns")
-        .select("id, kind, room_label, amount, return_date, note")
+        .select("id, kind, paid_from, room_label, amount, return_date, note")
         .order("return_date", { ascending: false })
         .order("created_at", { ascending: false }),
+      supabase
+        .from("advance_moves")
+        .select("id, amount, destination, move_date, room_label, note")
+        .order("move_date", { ascending: false })
+        .order("created_at", { ascending: false }),
     ]);
-    const err = c.error ?? t.error ?? x.error ?? r.error;
+    const err = c.error ?? t.error ?? x.error ?? r.error ?? mv.error;
     if (err) message.error(err.message);
     setCollections(c.data ?? []);
     setTransfers(t.data ?? []);
     setExpenses(x.data ?? []);
     setReturns(r.data ?? []);
+    setMoves(mv.data ?? []);
     setLoading(false);
   }, [message]);
 
@@ -107,10 +127,17 @@ export default function IncomePage() {
   // Rent income = cash received + the part settled from the tenant's advance.
   const rentOf = (c: Collection) => Number(c.amount) + Number(c.advance_applied);
   const collected = collections.reduce((s, c) => s + rentOf(c), 0);
-  const inBank = transfers.reduce((s, t) => s + Number(t.amount), 0);
+  const toBank = transfers.reduce((s, t) => s + Number(t.amount), 0);
   const spent = expenses.reduce((s, e) => s + Number(e.amount), 0);
-  // Advance is security money held separately, so it is not part of cash on hand.
-  const cash = collected - inBank - spent;
+  // Advance is security money held separately. It only joins cash on hand or the bank once the
+  // owner moves it, and a refund paid out of cash takes it back out.
+  const movedCash = moves.filter((m) => m.destination === "cash").reduce((s, m) => s + Number(m.amount), 0);
+  const movedBank = moves.filter((m) => m.destination === "bank").reduce((s, m) => s + Number(m.amount), 0);
+  const cashRefunds = returns
+    .filter((r) => r.kind === "refund" && r.paid_from === "cash")
+    .reduce((s, r) => s + Number(r.amount), 0);
+  const inBank = toBank + movedBank;
+  const cash = collected - toBank - spent + movedCash - cashRefunds;
 
   // Month-by-month cash book: opening + collected - to bank - expenses = closing, carried forward.
   const monthly = (() => {
@@ -125,7 +152,17 @@ export default function IncomePage() {
     const col = inMonth(collections.map((c) => ({ d: c.paid_at, amount: rentOf(c) })));
     const tr = inMonth(transfers.map((t) => ({ d: t.transfer_date, amount: t.amount })));
     const ex = inMonth(expenses.map((e) => ({ d: e.expense_date, amount: e.amount })));
-    const keys = [...col.keys(), ...tr.keys(), ...ex.keys()].sort();
+    // Advance moved into cash adds to cash; refunds paid out of cash take it away.
+    const adv = new Map<string, number>();
+    const addAdv = (d: string, amount: number) => {
+      const k = dayjs(d).format("YYYY-MM");
+      adv.set(k, (adv.get(k) ?? 0) + amount);
+    };
+    moves.filter((m) => m.destination === "cash").forEach((m) => addAdv(m.move_date, Number(m.amount)));
+    returns
+      .filter((r) => r.kind === "refund" && r.paid_from === "cash")
+      .forEach((r) => addAdv(r.return_date, -Number(r.amount)));
+    const keys = [...col.keys(), ...tr.keys(), ...ex.keys(), ...adv.keys()].sort();
     if (!keys.length) return [];
     const rows: MonthRow[] = [];
     let opening = 0;
@@ -134,7 +171,8 @@ export default function IncomePage() {
       const collectedM = col.get(k) ?? 0;
       const bankM = tr.get(k) ?? 0;
       const spentM = ex.get(k) ?? 0;
-      const closing = opening + collectedM - bankM - spentM;
+      const advM = adv.get(k) ?? 0;
+      const closing = opening + collectedM - bankM - spentM + advM;
       rows.push({
         key: k,
         month: m.format("MMMM YYYY"),
@@ -142,6 +180,7 @@ export default function IncomePage() {
         collected: collectedM,
         bank: bankM,
         spent: spentM,
+        advance: advM,
         closing,
       });
       opening = closing;
@@ -173,6 +212,8 @@ export default function IncomePage() {
     load();
   }
 
+  const hasAdvance = monthly.some((m) => m.advance !== 0);
+
   const tabs = [
     {
       key: "monthly",
@@ -180,38 +221,99 @@ export default function IncomePage() {
       children:
         monthly.length === 0 ? (
           <EmptyList text="No income yet. Mark rent as paid on the Rent page." />
-        ) : (
-          <div className="row-list">
+        ) : isMobile ? (
+          <div style={{ display: "grid", gap: 12 }}>
             {monthly.map((m) => (
               <div key={m.key} className="month-card">
                 <div className="month-head">
-                  <b>{m.month}</b>
-                  <span>
-                    <span style={{ color: "#64748b", fontSize: 12 }}>Cash at month end </span>
-                    <b style={{ fontSize: 17 }}>{fmt(m.closing)}</b>
-                  </span>
+                  <b style={{ fontSize: 16 }}>{m.month}</b>
                 </div>
-                <div className="month-grid">
-                  <div>
-                    <span>Opening</span>
-                    {fmt(m.opening)}
+                {[
+                  { label: "Opening cash", value: fmt(m.opening) },
+                  { label: "Rent collected", value: `+${fmt(m.collected)}`, color: "#16a34a" },
+                  { label: "Sent to bank", value: `-${fmt(m.bank)}` },
+                  { label: "Expenses", value: `-${fmt(m.spent)}`, color: "#e11d48" },
+                  {
+                    label: "Net income",
+                    value: fmt(m.collected - m.spent),
+                    color: m.collected - m.spent >= 0 ? "#16a34a" : "#e11d48",
+                  },
+                  ...(hasAdvance
+                    ? [{ label: "Advance", value: `${m.advance >= 0 ? "+" : "-"}${fmt(Math.abs(m.advance))}` }]
+                    : []),
+                ].map((x) => (
+                  <div
+                    key={x.label}
+                    style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}
+                  >
+                    <span style={{ color: "#64748b" }}>{x.label}</span>
+                    <b style={{ color: x.color }}>{x.value}</b>
                   </div>
-                  <div>
-                    <span>Collected</span>
-                    <b style={{ color: "#16a34a" }}>+{fmt(m.collected)}</b>
-                  </div>
-                  <div>
-                    <span>To bank</span>
-                    <b>-{fmt(m.bank)}</b>
-                  </div>
-                  <div>
-                    <span>Expenses</span>
-                    <b style={{ color: "#e11d48" }}>-{fmt(m.spent)}</b>
-                  </div>
+                ))}
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    borderTop: "1px solid #eceef6",
+                    marginTop: 6,
+                    paddingTop: 8,
+                  }}
+                >
+                  <b>Cash on hand (month end)</b>
+                  <b style={{ fontSize: 17 }}>{fmt(m.closing)}</b>
                 </div>
               </div>
             ))}
           </div>
+        ) : (
+          <Table<MonthRow>
+            rowKey="key"
+            dataSource={monthly}
+            size="middle"
+            pagination={{ pageSize: 12, hideOnSinglePage: true, showSizeChanger: false }}
+            columns={[
+              { title: "Month", dataIndex: "month", render: (v: string) => <b>{v}</b> },
+              { title: "Opening cash", dataIndex: "opening", align: "right", render: (v: number) => fmt(v) },
+              {
+                title: "Rent collected",
+                dataIndex: "collected",
+                align: "right",
+                render: (v: number) => <span style={{ color: "#16a34a" }}>+{fmt(v)}</span>,
+              },
+              { title: "Sent to bank", dataIndex: "bank", align: "right", render: (v: number) => `-${fmt(v)}` },
+              {
+                title: "Expenses",
+                dataIndex: "spent",
+                align: "right",
+                render: (v: number) => <span style={{ color: "#e11d48" }}>-{fmt(v)}</span>,
+              },
+              {
+                title: "Net income",
+                align: "right",
+                render: (_, m) => (
+                  <b style={{ color: m.collected - m.spent >= 0 ? "#16a34a" : "#e11d48" }}>
+                    {fmt(m.collected - m.spent)}
+                  </b>
+                ),
+              },
+              ...(hasAdvance
+                ? [
+                    {
+                      title: "Advance",
+                      dataIndex: "advance",
+                      align: "right" as const,
+                      render: (v: number) => `${v >= 0 ? "+" : "-"}${fmt(Math.abs(v))}`,
+                    },
+                  ]
+                : []),
+              {
+                title: "Cash on hand (month end)",
+                dataIndex: "closing",
+                align: "right",
+                render: (v: number) => <b>{fmt(v)}</b>,
+              },
+            ]}
+          />
         ),
     },
     {
@@ -277,33 +379,56 @@ export default function IncomePage() {
       key: "returns",
       label: "Advance",
       children:
-        returns.length === 0 ? (
-          <EmptyList text="No advance used or returned yet" />
+        returns.length + moves.length === 0 ? (
+          <EmptyList text="No advance moved, used or returned yet" />
         ) : (
           <div className="row-list">
-            {returns.map((r) => (
-              <div key={r.id} className="row-card">
-                <div>
-                  <div className="row-title">
-                    {r.room_label}
-                    {r.kind === "applied" ? (
-                      <Tag color="gold" style={{ margin: 0 }}>
-                        Deducted from rent
-                      </Tag>
-                    ) : (
-                      <Tag color="green" style={{ margin: 0 }}>
-                        Cash refund
-                      </Tag>
-                    )}
+            {[
+              ...moves.map((m) => ({ type: "move" as const, date: m.move_date, id: m.id, m })),
+              ...returns.map((r) => ({ type: "return" as const, date: r.return_date, id: r.id, r })),
+            ]
+              .sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0))
+              .map((e) =>
+                e.type === "move" ? (
+                  <div key={`m-${e.id}`} className="row-card">
+                    <div>
+                      <div className="row-title">
+                        Advance moved{e.m.room_label ? ` - ${e.m.room_label}` : ""}
+                        <Tag color="geekblue" style={{ margin: 0 }}>
+                          To {e.m.destination === "bank" ? "bank" : "cash on hand"}
+                        </Tag>
+                      </div>
+                      <div className="row-sub">
+                        {dayjs(e.m.move_date).format("DD MMM YYYY")}
+                        {e.m.note && ` - ${e.m.note}`}
+                      </div>
+                    </div>
+                    <div className="row-amount in">+{fmt(e.m.amount)}</div>
                   </div>
-                  <div className="row-sub">
-                    {dayjs(r.return_date).format("DD MMM YYYY")}
-                    {r.note && ` - ${r.note}`}
+                ) : (
+                  <div key={`r-${e.id}`} className="row-card">
+                    <div>
+                      <div className="row-title">
+                        {e.r.room_label}
+                        {e.r.kind === "applied" ? (
+                          <Tag color="gold" style={{ margin: 0 }}>
+                            Deducted from rent
+                          </Tag>
+                        ) : (
+                          <Tag color="green" style={{ margin: 0 }}>
+                            {e.r.paid_from === "cash" ? "Refund from cash" : "Refund"}
+                          </Tag>
+                        )}
+                      </div>
+                      <div className="row-sub">
+                        {dayjs(e.r.return_date).format("DD MMM YYYY")}
+                        {e.r.note && ` - ${e.r.note}`}
+                      </div>
+                    </div>
+                    <div className="row-amount">{fmt(e.r.amount)}</div>
                   </div>
-                </div>
-                <div className="row-amount">{fmt(r.amount)}</div>
-              </div>
-            ))}
+                ),
+              )}
           </div>
         ),
     },
@@ -340,14 +465,18 @@ export default function IncomePage() {
       <div className="hero">
         <div className="hero-label">Cash on hand</div>
         <div className="hero-amount">{loading ? "..." : fmt(cash)}</div>
-        <div className="hero-grid" style={{ gridTemplateColumns: "repeat(3, 1fr)" }}>
+        <div className="hero-grid">
           <div className="hero-mini">
             <span>Total collected</span>
             <b>{fmt(collected)}</b>
           </div>
           <div className="hero-mini">
             <span>Expenses</span>
-            <b>{fmt(spent)}</b>
+            <b>- {fmt(spent)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>Net income</span>
+            <b>{fmt(collected - spent)}</b>
           </div>
           <div className="hero-mini">
             <span>In bank</span>

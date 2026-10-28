@@ -382,7 +382,7 @@ body {
 
 .month-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   gap: 8px;
   font-size: 13px;
 }
@@ -400,4 +400,8 @@ body {
   .month-grid {
     grid-template-columns: repeat(2, 1fr);
   }
+}
+
+.unit-card.part {
+  border-left-color: #f59e0b;
 }

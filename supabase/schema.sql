@@ -24,9 +24,12 @@ create table if not exists public.payments (
   room_id uuid not null references public.rooms(id) on delete cascade,
   month date not null, -- first day of the month
   amount numeric not null,
-  paid_at timestamptz not null default now(),
-  unique (room_id, month)
+  paid_at timestamptz not null default now()
 );
+
+-- A month can have several payments (part payments). Older installs had one per month.
+alter table public.payments drop constraint if exists payments_room_id_month_key;
+create index if not exists payments_room_month_idx on public.payments (room_id, month);
 
 alter table public.payments add column if not exists paid_by text;
 -- Part of the rent settled from the tenant's advance (not cash received).
@@ -54,7 +57,7 @@ begin
   end if;
 end $$;
 
--- Electricity (prepaid meter deposits)
+-- Utilities: electricity, gas, water... (table keeps its original name)
 create table if not exists public.electricity_deposits (
   id uuid primary key default gen_random_uuid(),
   user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
@@ -65,6 +68,11 @@ create table if not exists public.electricity_deposits (
   invoice_path text,
   created_at timestamptz not null default now()
 );
+
+-- What kind of bill it is, typed by the admin (Electricity, Gas, Water...).
+alter table public.electricity_deposits add column if not exists utility_type text not null default 'Electricity';
+-- Gas or water bills may have no meter number.
+alter table public.electricity_deposits alter column meter_number drop not null;
 
 alter table public.electricity_deposits enable row level security;
 
@@ -140,3 +148,29 @@ alter table public.advance_returns add column if not exists payment_id uuid
 
 -- Advance is security money held separately; it does not count as cash on hand.
 drop table if exists public.advance_receipts;
+
+-- Advance moved into cash on hand or the bank, so the owner can spend it.
+create table if not exists public.advance_moves (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  amount numeric not null check (amount > 0),
+  destination text not null check (destination in ('cash', 'bank')),
+  move_date date not null default current_date,
+  note text,
+  created_at timestamptz not null default now()
+);
+
+alter table public.advance_moves enable row level security;
+
+drop policy if exists "own advance moves" on public.advance_moves;
+create policy "own advance moves" on public.advance_moves for all
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+
+-- Where a cash refund of advance came from: 'advance' = money not moved yet, 'cash' = cash on hand.
+alter table public.advance_returns add column if not exists paid_from text not null default 'advance'
+  check (paid_from in ('advance', 'cash'));
+
+-- Which room or shop an advance move came from (older moves have none).
+alter table public.advance_moves add column if not exists room_id uuid
+  references public.rooms(id) on delete set null;
+alter table public.advance_moves add column if not exists room_label text;

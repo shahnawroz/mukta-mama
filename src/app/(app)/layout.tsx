@@ -39,9 +39,9 @@ function NavMenu({ pathname, onNavigate }: { pathname: string; onNavigate?: () =
           label: <Link href="/expenses">Expenses</Link>,
         },
         {
-          key: "/electricity",
+          key: "/utilities",
           icon: <ThunderboltOutlined />,
-          label: <Link href="/electricity">Electricity</Link>,
+          label: <Link href="/utilities">Utilities</Link>,
         },
       ]}
     />
