@@ -61,7 +61,14 @@ function statusOf(u: Unit) {
 
 function StatusTag({ unit }: { unit: Unit }) {
   const s = statusOf(unit);
-  if (s === "paid") return <Tag color="green" style={{ margin: 0 }}>Paid</Tag>;
+  if (s === "paid") {
+    const extra = unit.paid - Number(unit.rent);
+    return (
+      <Tag color="green" style={{ margin: 0 }}>
+        {extra > 0 ? `Paid (+${fmt(extra)} extra)` : "Paid"}
+      </Tag>
+    );
+  }
   if (s === "part") return <Tag color="orange" style={{ margin: 0 }}>Part paid</Tag>;
   if (s === "norent") return <Tag style={{ margin: 0 }}>No rent set</Tag>;
   return <Tag color="red" style={{ margin: 0 }}>Due</Tag>;

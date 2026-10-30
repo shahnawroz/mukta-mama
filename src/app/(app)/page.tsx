@@ -361,11 +361,16 @@ export default function DashboardPage() {
       <div className="unit-list">
         {[
           { label: "Total rent for this month", value: overall.total, color: "#0f172a" },
-          { label: "Rent received", value: collectedM, color: "#16a34a" },
+          { label: "Paid toward this month's rent", value: overall.paid, color: "#16a34a" },
           {
             label: "Still to collect",
             value: overall.total - overall.paid,
             color: overall.total - overall.paid > 0 ? "#e11d48" : "#16a34a",
+          },
+          {
+            label: `All rent received in ${month.format("MMM")} (any month)`,
+            value: collectedM,
+            color: "#16a34a",
           },
           { label: "Expenses", value: expensesM, color: "#e11d48" },
           {
