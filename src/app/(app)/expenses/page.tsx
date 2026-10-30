@@ -14,10 +14,14 @@ import {
   Modal,
   Popconfirm,
   Skeleton,
+  Table,
 } from "antd";
 import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { fetchAll } from "@/lib/fetchAll";
+import { useIsMobile } from "@/lib/useIsMobile";
+import CompactList from "@/components/CompactList";
 import PageHeader from "@/components/PageHeader";
 
 type Expense = { id: string; amount: number; expense_date: string; note: string };
@@ -27,6 +31,7 @@ const fmt = (v: number) => Number(v).toLocaleString();
 
 export default function ExpensesPage() {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [month, setMonth] = useState<Dayjs>(dayjs());
   const [loading, setLoading] = useState(true);
@@ -37,11 +42,15 @@ export default function ExpensesPage() {
   const [form] = Form.useForm<FormValues>();
 
   const load = useCallback(async () => {
-    const { data, error } = await createClient()
-      .from("expenses")
-      .select("id, amount, expense_date, note")
-      .order("expense_date", { ascending: false })
-      .order("created_at", { ascending: false });
+    const supabase = createClient();
+    const { data, error } = await fetchAll((lo, hi) =>
+      supabase
+        .from("expenses")
+        .select("id, amount, expense_date, note")
+        .order("expense_date", { ascending: false })
+        .order("id")
+        .range(lo, hi),
+    );
     if (error) message.error(error.message);
     else setExpenses(data ?? []);
     setLoading(false);
@@ -109,6 +118,15 @@ export default function ExpensesPage() {
       }
     : { expense_date: month.isSame(dayjs(), "month") ? dayjs() : month.startOf("month") };
 
+  const rowActions = (e: Expense) => (
+    <span style={{ display: "inline-flex", alignItems: "center" }}>
+      <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(e)} aria-label="Edit" />
+      <Popconfirm title="Delete this expense?" onConfirm={() => removeExpense(e.id)}>
+        <Button type="text" danger icon={<DeleteOutlined />} />
+      </Popconfirm>
+    </span>
+  );
+
   return (
     <>
       <PageHeader
@@ -129,7 +147,7 @@ export default function ExpensesPage() {
       <Card className="soft-card" style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
           <div>
-            <div style={{ color: "#64748b", fontSize: 13 }}>Spent in {month.format("MMMM YYYY")}</div>
+            <div style={{ color: "#64748b", fontSize: 15 }}>Spent in {month.format("MMMM YYYY")}</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: "#e11d48" }}>
               {loading ? "..." : fmt(monthTotal)}
             </div>
@@ -160,24 +178,44 @@ export default function ExpensesPage() {
             description={`No expenses in ${month.format("MMMM YYYY")}`}
           />
         </Card>
+      ) : isMobile ? (
+        <CompactList
+          items={shown.map((e) => ({
+            key: e.id,
+            title: e.note,
+            sub: dayjs(e.expense_date).format("DD MMM YYYY"),
+            amount: <span style={{ color: "#e11d48" }}>-{fmt(e.amount)}</span>,
+            actions: rowActions(e),
+          }))}
+        />
       ) : (
-        <div className="row-list">
-          {shown.map((e) => (
-            <div key={e.id} className="row-card">
-              <div>
-                <div className="row-title">{e.note}</div>
-                <div className="row-sub">{dayjs(e.expense_date).format("DD MMM YYYY")}</div>
-              </div>
-              <div className="row-side">
-                <div className="row-amount out">-{fmt(e.amount)}</div>
-                <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(e)} aria-label="Edit" />
-                <Popconfirm title="Delete this expense?" onConfirm={() => removeExpense(e.id)}>
-                  <Button type="text" danger icon={<DeleteOutlined />} />
-                </Popconfirm>
-              </div>
-            </div>
-          ))}
-        </div>
+        <Card className="soft-card" styles={{ body: { padding: 0 } }}>
+          <Table<Expense>
+            rowKey="id"
+            dataSource={shown}
+            size="middle"
+            pagination={false}
+            columns={[
+              {
+                title: "Date",
+                dataIndex: "expense_date",
+                width: 130,
+                defaultSortOrder: "descend",
+                sorter: (x, y) => x.expense_date.localeCompare(y.expense_date),
+                render: (v: string) => dayjs(v).format("DD MMM YYYY"),
+              },
+              { title: "What it was for", dataIndex: "note" },
+              {
+                title: "Amount",
+                dataIndex: "amount",
+                align: "right",
+                sorter: (x, y) => Number(x.amount) - Number(y.amount),
+                render: (v: number) => <b style={{ color: "#e11d48" }}>-{fmt(v)}</b>,
+              },
+              { title: "", align: "right", width: 110, render: (_, e) => rowActions(e) },
+            ]}
+          />
+        </Card>
       )}
 
       <Modal
@@ -196,6 +234,7 @@ export default function ExpensesPage() {
         <Form
           key={editing?.id ?? "new"}
           form={form}
+          preserve={false}
           layout="vertical"
           onFinish={saveExpense}
           initialValues={initialValues}

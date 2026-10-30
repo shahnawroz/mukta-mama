@@ -19,7 +19,9 @@ import {
 import { BankOutlined, DeleteOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { fetchAll } from "@/lib/fetchAll";
 import { useIsMobile } from "@/lib/useIsMobile";
+import CompactList from "@/components/CompactList";
 import PageHeader from "@/components/PageHeader";
 
 type Collection = {
@@ -83,31 +85,47 @@ export default function IncomePage() {
   const load = useCallback(async () => {
     const supabase = createClient();
     const [c, t, x, r, mv] = await Promise.all([
-      supabase
-        .from("payments")
-        .select("id, amount, advance_applied, paid_at, month, rooms(kind, room_number)")
-        .order("paid_at", { ascending: false })
-        .overrideTypes<Collection[]>(),
-      supabase
-        .from("bank_transfers")
-        .select("id, amount, transfer_date, note")
-        .order("transfer_date", { ascending: false })
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("expenses")
-        .select("id, amount, expense_date, note")
-        .order("expense_date", { ascending: false })
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("advance_returns")
-        .select("id, kind, paid_from, room_label, amount, return_date, note")
-        .order("return_date", { ascending: false })
-        .order("created_at", { ascending: false }),
-      supabase
-        .from("advance_moves")
-        .select("id, amount, destination, move_date, room_label, note")
-        .order("move_date", { ascending: false })
-        .order("created_at", { ascending: false }),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("payments")
+          .select("id, amount, advance_applied, paid_at, month, rooms(kind, room_number)")
+          .order("paid_at", { ascending: false })
+          .order("id")
+          .range(lo, hi)
+          .overrideTypes<Collection[]>(),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("bank_transfers")
+          .select("id, amount, transfer_date, note")
+          .order("transfer_date", { ascending: false })
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("expenses")
+          .select("id, amount, expense_date, note")
+          .order("expense_date", { ascending: false })
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("advance_returns")
+          .select("id, kind, paid_from, room_label, amount, return_date, note")
+          .order("return_date", { ascending: false })
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("advance_moves")
+          .select("id, amount, destination, move_date, room_label, note")
+          .order("move_date", { ascending: false })
+          .order("id")
+          .range(lo, hi),
+      ),
     ]);
     const err = c.error ?? t.error ?? x.error ?? r.error ?? mv.error;
     if (err) message.error(err.message);
@@ -214,6 +232,32 @@ export default function IncomePage() {
 
   const hasAdvance = monthly.some((m) => m.advance !== 0);
 
+  // Advance moved to cash/bank, refunded or deducted from rent, newest first.
+  const advanceRows = [
+    ...moves.map((m) => ({
+      key: `m-${m.id}`,
+      date: m.move_date,
+      room: m.room_label ?? "-",
+      tag: { color: "geekblue", label: m.destination === "bank" ? "Moved to bank" : "Moved to cash" },
+      note: m.note,
+      amount: Number(m.amount),
+      incoming: true,
+    })),
+    ...returns.map((r) => ({
+      key: `r-${r.id}`,
+      date: r.return_date,
+      room: r.room_label,
+      tag:
+        r.kind === "applied"
+          ? { color: "gold", label: "Deducted from rent" }
+          : { color: "green", label: r.paid_from === "cash" ? "Refund from cash" : "Refund" },
+      note: r.note,
+      amount: Number(r.amount),
+      incoming: false,
+    })),
+  ].sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0));
+  const pager = false as const; // show every row, never split into pages
+
   const tabs = [
     {
       key: "monthly",
@@ -270,7 +314,7 @@ export default function IncomePage() {
             rowKey="key"
             dataSource={monthly}
             size="middle"
-            pagination={{ pageSize: 12, hideOnSinglePage: true, showSizeChanger: false }}
+            pagination={false}
             columns={[
               { title: "Month", dataIndex: "month", render: (v: string) => <b>{v}</b> },
               { title: "Opening cash", dataIndex: "opening", align: "right", render: (v: number) => fmt(v) },
@@ -278,14 +322,14 @@ export default function IncomePage() {
                 title: "Rent collected",
                 dataIndex: "collected",
                 align: "right",
-                render: (v: number) => <span style={{ color: "#16a34a" }}>+{fmt(v)}</span>,
+                render: (v: number) => <span style={{ color: "#16a34a", fontWeight: 700 }}>+{fmt(v)}</span>,
               },
               { title: "Sent to bank", dataIndex: "bank", align: "right", render: (v: number) => `-${fmt(v)}` },
               {
                 title: "Expenses",
                 dataIndex: "spent",
                 align: "right",
-                render: (v: number) => <span style={{ color: "#e11d48" }}>-{fmt(v)}</span>,
+                render: (v: number) => <span style={{ color: "#e11d48", fontWeight: 700 }}>-{fmt(v)}</span>,
               },
               {
                 title: "Net income",
@@ -322,29 +366,73 @@ export default function IncomePage() {
       children:
         collections.length === 0 ? (
           <EmptyList text="No rent collected yet" />
+        ) : isMobile ? (
+          <CompactList
+            items={collections.map((c) => ({
+              key: c.id,
+              title: (
+                <>
+                  {c.rooms && (
+                    <Tag color={c.rooms.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                      {c.rooms.kind === "shop" ? "Shop" : "Room"}
+                    </Tag>
+                  )}
+                  {c.rooms?.room_number ?? "-"}
+                </>
+              ),
+              sub: `${dayjs(c.month).format("MMM YYYY")} rent - ${dayjs(c.paid_at).format("DD MMM YYYY")}`,
+              amount: <span style={{ color: "#16a34a" }}>+{fmt(rentOf(c))}</span>,
+            }))}
+          />
         ) : (
-          <div className="row-list">
-            {collections.map((c) => (
-              <div key={c.id} className="row-card">
-                <div>
-                  <div className="row-title">
-                    {c.rooms && (
-                      <Tag color={c.rooms.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
-                        {c.rooms.kind === "shop" ? "Shop" : "Room"}
-                      </Tag>
-                    )}
-                    {c.rooms?.room_number ?? "-"}
-                  </div>
-                  <div className="row-sub">
-                    {dayjs(c.month).format("MMM YYYY")} rent - collected{" "}
-                    {dayjs(c.paid_at).format("DD MMM YYYY")}
-                    {Number(c.advance_applied) > 0 && ` - ${fmt(c.advance_applied)} from advance`}
-                  </div>
-                </div>
-                <div className="row-amount in">+{fmt(rentOf(c))}</div>
-              </div>
-            ))}
-          </div>
+          <Table<Collection>
+            rowKey="id"
+            dataSource={collections}
+            size="middle"
+            pagination={pager}
+            columns={[
+              {
+                title: "Collected on",
+                dataIndex: "paid_at",
+                width: 140,
+                sorter: (x, y) => x.paid_at.localeCompare(y.paid_at),
+                render: (v: string) => dayjs(v).format("DD MMM YYYY"),
+              },
+              {
+                title: "Type",
+                width: 100,
+                render: (_, c) =>
+                  c.rooms ? (
+                    <Tag color={c.rooms.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                      {c.rooms.kind === "shop" ? "Shop" : "Room"}
+                    </Tag>
+                  ) : (
+                    "-"
+                  ),
+              },
+              {
+                title: "Name",
+                width: 240,
+                render: (_, c) => (c.rooms ? <b style={{ whiteSpace: "nowrap" }}>{c.rooms.room_number}</b> : "-"),
+              },
+              {
+                title: "Rent for",
+                dataIndex: "month",
+                render: (v: string) => dayjs(v).format("MMM YYYY"),
+              },
+              {
+                title: "From advance",
+                align: "right",
+                render: (_, c) => (Number(c.advance_applied) > 0 ? fmt(c.advance_applied) : "-"),
+              },
+              {
+                title: "Amount",
+                align: "right",
+                sorter: (x, y) => rentOf(x) - rentOf(y),
+                render: (_, c) => <b style={{ color: "#16a34a" }}>+{fmt(rentOf(c))}</b>,
+              },
+            ]}
+          />
         ),
     },
     {
@@ -353,83 +441,116 @@ export default function IncomePage() {
       children:
         transfers.length === 0 ? (
           <EmptyList text="No bank transfers yet" />
+        ) : isMobile ? (
+          <CompactList
+            items={transfers.map((t) => ({
+              key: t.id,
+              title: dayjs(t.transfer_date).format("DD MMM YYYY"),
+              sub: t.note ?? "Transfer to bank",
+              amount: fmt(t.amount),
+              actions: (
+                <Popconfirm
+                  title="Delete this transfer? The amount goes back to cash."
+                  onConfirm={() => removeTransfer(t.id)}
+                >
+                  <Button type="text" danger icon={<DeleteOutlined />} />
+                </Popconfirm>
+              ),
+            }))}
+          />
         ) : (
-          <div className="row-list">
-            {transfers.map((t) => (
-              <div key={t.id} className="row-card">
-                <div>
-                  <div className="row-title">{dayjs(t.transfer_date).format("DD MMM YYYY")}</div>
-                  <div className="row-sub">{t.note ?? "Transfer to bank"}</div>
-                </div>
-                <div className="row-side">
-                  <div className="row-amount">{fmt(t.amount)}</div>
+          <Table<Transfer>
+            rowKey="id"
+            dataSource={transfers}
+            size="middle"
+            pagination={pager}
+            columns={[
+              {
+                title: "Date",
+                dataIndex: "transfer_date",
+                width: 140,
+                sorter: (x, y) => x.transfer_date.localeCompare(y.transfer_date),
+                render: (v: string) => dayjs(v).format("DD MMM YYYY"),
+              },
+              { title: "Note", dataIndex: "note", render: (v: string | null) => v ?? "-" },
+              {
+                title: "Amount",
+                dataIndex: "amount",
+                align: "right",
+                sorter: (x, y) => Number(x.amount) - Number(y.amount),
+                render: (v: number) => <b>{fmt(v)}</b>,
+              },
+              {
+                title: "",
+                align: "right",
+                width: 80,
+                render: (_, t) => (
                   <Popconfirm
                     title="Delete this transfer? The amount goes back to cash."
                     onConfirm={() => removeTransfer(t.id)}
                   >
                     <Button type="text" danger icon={<DeleteOutlined />} />
                   </Popconfirm>
-                </div>
-              </div>
-            ))}
-          </div>
+                ),
+              },
+            ]}
+          />
         ),
     },
     {
       key: "returns",
       label: "Advance",
       children:
-        returns.length + moves.length === 0 ? (
+        advanceRows.length === 0 ? (
           <EmptyList text="No advance moved, used or returned yet" />
+        ) : isMobile ? (
+          <CompactList
+            items={advanceRows.map((r) => ({
+              key: r.key,
+              title: (
+                <>
+                  {r.room}
+                  <Tag color={r.tag.color} style={{ margin: 0 }}>
+                    {r.tag.label}
+                  </Tag>
+                </>
+              ),
+              sub: `${dayjs(r.date).format("DD MMM YYYY")}${r.note ? ` - ${r.note}` : ""}`,
+              amount: fmt(r.amount),
+            }))}
+          />
         ) : (
-          <div className="row-list">
-            {[
-              ...moves.map((m) => ({ type: "move" as const, date: m.move_date, id: m.id, m })),
-              ...returns.map((r) => ({ type: "return" as const, date: r.return_date, id: r.id, r })),
-            ]
-              .sort((x, y) => (x.date < y.date ? 1 : x.date > y.date ? -1 : 0))
-              .map((e) =>
-                e.type === "move" ? (
-                  <div key={`m-${e.id}`} className="row-card">
-                    <div>
-                      <div className="row-title">
-                        Advance moved{e.m.room_label ? ` - ${e.m.room_label}` : ""}
-                        <Tag color="geekblue" style={{ margin: 0 }}>
-                          To {e.m.destination === "bank" ? "bank" : "cash on hand"}
-                        </Tag>
-                      </div>
-                      <div className="row-sub">
-                        {dayjs(e.m.move_date).format("DD MMM YYYY")}
-                        {e.m.note && ` - ${e.m.note}`}
-                      </div>
-                    </div>
-                    <div className="row-amount in">+{fmt(e.m.amount)}</div>
-                  </div>
-                ) : (
-                  <div key={`r-${e.id}`} className="row-card">
-                    <div>
-                      <div className="row-title">
-                        {e.r.room_label}
-                        {e.r.kind === "applied" ? (
-                          <Tag color="gold" style={{ margin: 0 }}>
-                            Deducted from rent
-                          </Tag>
-                        ) : (
-                          <Tag color="green" style={{ margin: 0 }}>
-                            {e.r.paid_from === "cash" ? "Refund from cash" : "Refund"}
-                          </Tag>
-                        )}
-                      </div>
-                      <div className="row-sub">
-                        {dayjs(e.r.return_date).format("DD MMM YYYY")}
-                        {e.r.note && ` - ${e.r.note}`}
-                      </div>
-                    </div>
-                    <div className="row-amount">{fmt(e.r.amount)}</div>
-                  </div>
+          <Table
+            rowKey="key"
+            dataSource={advanceRows}
+            size="middle"
+            pagination={pager}
+            columns={[
+              {
+                title: "Date",
+                dataIndex: "date",
+                width: 140,
+                sorter: (x, y) => x.date.localeCompare(y.date),
+                render: (v: string) => dayjs(v).format("DD MMM YYYY"),
+              },
+              { title: "Room / Shop", dataIndex: "room" },
+              {
+                title: "What happened",
+                render: (_, r) => (
+                  <Tag color={r.tag.color} style={{ margin: 0 }}>
+                    {r.tag.label}
+                  </Tag>
                 ),
-              )}
-          </div>
+              },
+              { title: "Note", dataIndex: "note", render: (v: string | null) => v ?? "-" },
+              {
+                title: "Amount",
+                dataIndex: "amount",
+                align: "right",
+                render: (v: number) => <b>{fmt(v)}</b>,
+              },
+            ]}
+          />
         ),
     },
   ];
@@ -503,6 +624,7 @@ export default function IncomePage() {
         </p>
         <Form
           form={form}
+          preserve={false}
           layout="vertical"
           onFinish={transfer}
           initialValues={{ transfer_date: dayjs() }}

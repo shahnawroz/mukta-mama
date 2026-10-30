@@ -5,6 +5,7 @@ import {
   App,
   Button,
   Card,
+  Checkbox,
   DatePicker,
   Dropdown,
   Empty,
@@ -30,13 +31,14 @@ import {
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { fetchAll } from "@/lib/fetchAll";
 import { useIsMobile } from "@/lib/useIsMobile";
 import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
 type Room = { id: string; kind: Kind; room_number: string; rent: number; advance: number };
 type NewRoom = { kind: Kind; room_number: string; rent?: number; advance?: number };
-type EditValues = { rent: number; advance: number };
+type EditValues = { kind: Kind; room_number: string; rent: number; advance: number };
 type ReturnValues = {
   mode: "applied" | "refund";
   paid_from: "advance" | "cash";
@@ -69,6 +71,7 @@ export default function RoomsPage() {
   const [saving, setSaving] = useState(false);
   const [kind, setKind] = useState<"all" | Kind>("all");
   const [search, setSearch] = useState("");
+  const [onlyAdvance, setOnlyAdvance] = useState(false);
   // Per room: advance already moved to cash/bank, less refunds that were paid out of cash.
   const [movedByRoom, setMovedByRoom] = useState<Map<string, number>>(new Map());
 
@@ -89,17 +92,27 @@ export default function RoomsPage() {
   const load = useCallback(async () => {
     const supabase = createClient();
     const [r, m, ret] = await Promise.all([
-      supabase
-        .from("rooms")
-        .select("id, kind, room_number, rent, advance")
-        .order("kind", { ascending: false })
-        .order("room_number"),
-      supabase.from("advance_moves").select("room_id, amount"),
-      supabase
-        .from("advance_returns")
-        .select("room_id, amount")
-        .eq("kind", "refund")
-        .eq("paid_from", "cash"),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("rooms")
+          .select("id, kind, room_number, rent, advance")
+          .order("kind", { ascending: false })
+          .order("room_number")
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase.from("advance_moves").select("room_id, amount").order("id").range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("advance_returns")
+          .select("room_id, amount")
+          .eq("kind", "refund")
+          .eq("paid_from", "cash")
+          .order("id")
+          .range(lo, hi),
+      ),
     ]);
     const err = r.error ?? m.error ?? ret.error;
     if (err) message.error(err.message);
@@ -146,11 +159,22 @@ export default function RoomsPage() {
     setSaving(true);
     const { error } = await createClient()
       .from("rooms")
-      .update({ rent: values.rent ?? 0, advance: values.advance ?? 0 })
+      .update({
+        kind: values.kind,
+        room_number: values.room_number.trim(),
+        rent: values.rent ?? 0,
+        advance: values.advance ?? 0,
+      })
       .eq("id", room.id);
     setSaving(false);
-    if (error) return message.error(error.message);
-    message.success(`${labelOf(room)} updated`);
+    if (error) {
+      return message.error(
+        error.code === "23505"
+          ? `${labelOf({ kind: values.kind, room_number: values.room_number.trim() })} already exists`
+          : error.message,
+      );
+    }
+    message.success(`${labelOf({ kind: values.kind, room_number: values.room_number.trim() })} updated`);
     setEditRoom(null);
     load();
   }
@@ -297,7 +321,10 @@ export default function RoomsPage() {
   const q = search.trim().toLowerCase();
   const visible = rooms
     .filter((r) => kind === "all" || r.kind === kind)
+    .filter((r) => !onlyAdvance || Number(r.advance) > 0)
     .filter((r) => !q || r.room_number.toLowerCase().includes(q));
+  const visibleRent = visible.reduce((sum, r) => sum + Number(r.rent), 0);
+  const visibleAdvance = visible.reduce((sum, r) => sum + Number(r.advance), 0);
   const roomCount = rooms.filter((r) => r.kind === "room").length;
   const shopCount = rooms.length - roomCount;
   const totalAdvance = rooms.reduce((sum, r) => sum + Number(r.advance), 0);
@@ -352,6 +379,12 @@ export default function RoomsPage() {
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
+        <Checkbox checked={onlyAdvance} onChange={(e) => setOnlyAdvance(e.target.checked)}>
+          Only with advance
+        </Checkbox>
+        <span style={{ color: "#64748b" }}>
+          Showing {visible.length} of {rooms.length}
+        </span>
       </div>
 
       {loading ? (
@@ -393,7 +426,7 @@ export default function RoomsPage() {
                 trigger={["click"]}
                 menu={{
                   items: [
-                    { key: "edit", label: "Edit rent / advance" },
+                    { key: "edit", label: "Edit" },
                     ...(Number(r.advance) > 0
                       ? [
                           { key: "move", label: "Move advance to cash or bank", disabled: notMoved(r) <= 0 },
@@ -427,18 +460,38 @@ export default function RoomsPage() {
             rowKey="id"
             dataSource={visible}
             size="middle"
-            pagination={{ pageSize: 50, hideOnSinglePage: true, showSizeChanger: false }}
+            sticky
+            pagination={false}
+            summary={() => (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0} colSpan={2}>
+                    <b>Total ({visible.length})</b>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={2} align="right">
+                    <b>{fmt(visibleRent)}</b>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={3} align="right">
+                    <b>{fmt(visibleAdvance)}</b>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={4} />
+                </Table.Summary.Row>
+              </Table.Summary>
+            )}
             columns={[
+              {
+                title: "Type",
+                dataIndex: "kind",
+                width: 110,
+                sorter: (a, b) => a.kind.localeCompare(b.kind),
+                render: (k: Kind) => <TypeTag kind={k} />,
+              },
               {
                 title: "Name",
                 dataIndex: "room_number",
+                width: 260,
                 sorter: (a, b) => a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
-                render: (_, r) => (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <TypeTag kind={r.kind} />
-                    <b>{r.room_number}</b>
-                  </span>
-                ),
+                render: (v: string) => <b style={{ whiteSpace: "nowrap" }}>{v}</b>,
               },
               {
                 title: "Rent",
@@ -456,7 +509,7 @@ export default function RoomsPage() {
                   <div>
                     {Number(v) > 0 ? <b>{fmt(v)}</b> : <span style={{ color: "#94a3b8" }}>-</span>}
                     {Number(v) > 0 && notMoved(r) < Number(v) && (
-                      <div style={{ fontSize: 12, color: "#64748b" }}>
+                      <div style={{ fontSize: 14, color: "#64748b" }}>
                         {fmt(notMoved(r))} not moved
                       </div>
                     )}
@@ -476,7 +529,7 @@ export default function RoomsPage() {
                         </Button>
                       </Dropdown>
                     )}
-                    <Tooltip title="Edit rent / advance">
+                    <Tooltip title="Edit">
                       <Button type="text" icon={<EditOutlined />} onClick={() => setEditRoom(r)} />
                     </Tooltip>
                     <Popconfirm title={`Delete ${labelOf(r)}?`} onConfirm={() => removeRoom(r)}>
@@ -503,6 +556,7 @@ export default function RoomsPage() {
         </p>
         <Form
           form={form}
+          preserve={false}
           layout="vertical"
           onFinish={addRoom}
           initialValues={{ kind: "room" }}
@@ -549,13 +603,37 @@ export default function RoomsPage() {
         <Form
           key={editRoom?.id}
           form={editForm}
+          preserve={false}
           layout="vertical"
           onFinish={saveEdit}
           initialValues={
-            editRoom ? { rent: Number(editRoom.rent), advance: Number(editRoom.advance) } : undefined
+            editRoom
+              ? {
+                  kind: editRoom.kind,
+                  room_number: editRoom.room_number,
+                  rent: Number(editRoom.rent),
+                  advance: Number(editRoom.advance),
+                }
+              : undefined
           }
           autoComplete="off"
         >
+          <Form.Item name="kind" label="Type">
+            <Segmented
+              block
+              options={[
+                { label: "Room", value: "room" },
+                { label: "Shop", value: "shop" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item
+            name="room_number"
+            label="Name / number"
+            rules={[{ required: true, whitespace: true, message: "Enter the room or shop name" }]}
+          >
+            <Input size="large" />
+          </Form.Item>
           <Form.Item name="rent" label="Monthly rent">
             <InputNumber size="large" min={0} style={{ width: "100%" }} />
           </Form.Item>
@@ -583,6 +661,7 @@ export default function RoomsPage() {
         <Form
           key={moveRoom?.id}
           form={moveForm}
+          preserve={false}
           layout="vertical"
           onFinish={moveAdvance}
           initialValues={{
@@ -642,6 +721,7 @@ export default function RoomsPage() {
         <Form
           key={returnRoom?.id}
           form={returnForm}
+          preserve={false}
           layout="vertical"
           onFinish={returnAdvance}
           initialValues={returnInitial}

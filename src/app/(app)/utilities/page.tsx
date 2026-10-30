@@ -9,13 +9,13 @@ import {
   DatePicker,
   Empty,
   Form,
-  Input,
   InputNumber,
   Modal,
   Popconfirm,
   Segmented,
   Select,
   Skeleton,
+  Table,
   Tag,
   Upload,
   type UploadFile,
@@ -31,36 +31,45 @@ import {
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { fetchAll } from "@/lib/fetchAll";
+import { useIsMobile } from "@/lib/useIsMobile";
+import CompactList from "@/components/CompactList";
 import PageHeader from "@/components/PageHeader";
 
 type Kind = "room" | "shop";
 type Unit = { id: string; kind: Kind; room_number: string };
+// One bill is for one meter / holding number, which can serve several rooms and shops.
 type Bill = {
   id: string;
   room_id: string;
+  room_ids: string[] | null;
   utility_type: string;
   meter_number: string | null;
+  holding_number: string | null;
   amount: number;
   deposit_date: string;
   invoice_path: string | null;
 };
 type FormValues = {
   utility_type: string;
-  room_id: string;
-  meter_number?: string;
-  amount: number;
   deposit_date: Dayjs;
+  meter_number?: string;
+  holding_number?: string;
+  room_ids: string[];
+  amount: number;
   invoice?: UploadFile[];
 };
 
 const MAX_IMAGE_MB = 5;
-const DEFAULT_TYPES = ["Electricity", "Gas", "Water"];
+const DEFAULT_TYPES = ["Electricity", "Gas", "Water", "Internet", "Garbage", "Maintenance", "Security"];
 const TAG_COLORS = ["gold", "cyan", "geekblue", "green", "magenta", "orange", "purple", "volcano"];
 const fmt = (v: number) => Number(v).toLocaleString();
 const norm = (t: string) => t.trim().toLowerCase();
+const roomsOf = (b: Bill) => (b.room_ids?.length ? b.room_ids : [b.room_id]);
 
 export default function UtilitiesPage() {
   const { message } = App.useApp();
+  const isMobile = useIsMobile();
   const [units, setUnits] = useState<Unit[]>([]);
   const [bills, setBills] = useState<Bill[]>([]);
   const [month, setMonth] = useState<Dayjs>(dayjs());
@@ -76,12 +85,24 @@ export default function UtilitiesPage() {
   const load = useCallback(async () => {
     const supabase = createClient();
     const [u, d] = await Promise.all([
-      supabase.from("rooms").select("id, kind, room_number").order("room_number"),
-      supabase
-        .from("electricity_deposits")
-        .select("id, room_id, utility_type, meter_number, amount, deposit_date, invoice_path")
-        .order("deposit_date", { ascending: false })
-        .order("created_at", { ascending: false }),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("rooms")
+          .select("id, kind, room_number")
+          .order("room_number")
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("electricity_deposits")
+          .select(
+            "id, room_id, room_ids, utility_type, meter_number, holding_number, amount, deposit_date, invoice_path",
+          )
+          .order("deposit_date", { ascending: false })
+          .order("id")
+          .range(lo, hi),
+      ),
     ]);
     const err = u.error ?? d.error;
     if (err) message.error(err.message);
@@ -96,6 +117,7 @@ export default function UtilitiesPage() {
   }, [load]);
 
   const unitOf = (id: string) => units.find((x) => x.id === id);
+  const unitLabel = (id: string) => unitOf(id)?.room_number ?? "-";
 
   // Types already used, plus the usual ones, without duplicates (case-insensitive).
   const knownTypes = (() => {
@@ -117,14 +139,20 @@ export default function UtilitiesPage() {
     return TAG_COLORS[(i < 0 ? 0 : i) % TAG_COLORS.length];
   };
 
-  // Prefill the meter number from the last bill for this room/shop (same type if one is typed).
-  function onUnitChange(roomId: string) {
-    if (editing) return;
-    const type = form.getFieldValue("utility_type") as string | undefined;
-    const last = bills.find(
-      (b) => b.room_id === roomId && (!type || norm(b.utility_type) === norm(type)),
-    );
-    if (last?.meter_number) form.setFieldValue("meter_number", last.meter_number);
+  // Meter and holding numbers used before, so they can be picked instead of typed again.
+  const distinct = (field: "meter_number" | "holding_number") => [
+    ...new Set(bills.map((b) => b[field]).filter((v): v is string => !!v)),
+  ];
+
+  // Picking a known meter (or holding number) fills in the rest from its latest bill.
+  function fillFrom(field: "meter_number" | "holding_number", value: string) {
+    const last = bills.find((b) => b[field] === value);
+    if (!last) return;
+    form.setFieldsValue({
+      meter_number: last.meter_number ?? undefined,
+      holding_number: last.holding_number ?? undefined,
+      room_ids: roomsOf(last),
+    });
   }
 
   function openAdd() {
@@ -166,11 +194,13 @@ export default function UtilitiesPage() {
 
     // Reuse the spelling already in use, so "water" and "Water" stay one type.
     const typed = values.utility_type.trim();
-    const existing = knownTypes.find((t) => norm(t) === norm(typed));
+    const utility_type = knownTypes.find((t) => norm(t) === norm(typed)) ?? typed;
     const row = {
-      utility_type: existing ?? typed,
-      room_id: values.room_id,
+      utility_type,
+      room_id: values.room_ids[0],
+      room_ids: values.room_ids,
       meter_number: values.meter_number?.trim() || null,
+      holding_number: values.holding_number?.trim() || null,
       amount: values.amount,
       deposit_date: values.deposit_date.format("YYYY-MM-DD"),
       invoice_path,
@@ -187,7 +217,7 @@ export default function UtilitiesPage() {
     if (editing?.invoice_path && uploadedPath) {
       await supabase.storage.from("invoices").remove([editing.invoice_path]);
     }
-    message.success(editing ? "Bill updated" : `${row.utility_type} bill added`);
+    message.success(editing ? "Bill updated" : `${utility_type} bill added`);
     closeModal();
     load();
   }
@@ -210,25 +240,29 @@ export default function UtilitiesPage() {
   const monthBills = bills.filter((b) => dayjs(b.deposit_date).isSame(month, "month"));
   const shown = monthBills
     .filter((b) => typeFilter === "all" || norm(b.utility_type) === norm(typeFilter))
-    .filter((b) => !filterUnit || b.room_id === filterUnit);
+    .filter((b) => !filterUnit || roomsOf(b).includes(filterUnit));
   const total = shown.reduce((s, b) => s + Number(b.amount), 0);
-  const initialValues = editing
+  const initialValues: Partial<FormValues> = editing
     ? {
         utility_type: editing.utility_type,
-        room_id: editing.room_id,
-        meter_number: editing.meter_number ?? undefined,
-        amount: Number(editing.amount),
         deposit_date: dayjs(editing.deposit_date),
+        meter_number: editing.meter_number ?? undefined,
+        holding_number: editing.holding_number ?? undefined,
+        room_ids: roomsOf(editing),
+        amount: Number(editing.amount),
         invoice: [],
       }
     : {
         deposit_date: month.isSame(dayjs(), "month") ? dayjs() : month.startOf("month"),
         utility_type: typeFilter !== "all" ? typeFilter : undefined,
+        room_ids: [],
       };
-  const unitOptions = units.map((u) => ({
-    value: u.id,
-    label: `${u.kind === "shop" ? "Shop" : "Room"} ${u.room_number}`,
-  }));
+  const optionsOf = (kind: Kind) =>
+    units.filter((u) => u.kind === kind).map((u) => ({ value: u.id, label: u.room_number }));
+  const unitOptions = [
+    { label: "Rooms", options: optionsOf("room") },
+    { label: "Shops", options: optionsOf("shop") },
+  ].filter((g) => g.options.length > 0);
   const typeTotals = new Map(
     usedTypes.map((t) => [
       t,
@@ -239,11 +273,28 @@ export default function UtilitiesPage() {
   );
   const monthTypes = usedTypes.filter((t) => (typeTotals.get(t) ?? 0) > 0);
 
+  const billActions = (b: Bill) => (
+    <span style={{ display: "inline-flex", alignItems: "center" }}>
+      <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(b)} aria-label="Edit" />
+      {b.invoice_path && (
+        <Button
+          type="text"
+          icon={<EyeOutlined />}
+          onClick={() => viewInvoice(b.invoice_path!)}
+          aria-label="View invoice"
+        />
+      )}
+      <Popconfirm title="Delete this bill?" onConfirm={() => removeBill(b)}>
+        <Button type="text" danger icon={<DeleteOutlined />} />
+      </Popconfirm>
+    </span>
+  );
+
   return (
     <>
       <PageHeader
         title="Utilities"
-        subtitle="Record utility bills (electricity, gas, water and more) with the invoice photo."
+        subtitle="Record any bill you pay for the building, with the invoice photo."
         extra={
           <Button type="primary" size="large" icon={<PlusOutlined />} onClick={openAdd}>
             Add bill
@@ -287,13 +338,13 @@ export default function UtilitiesPage() {
           }}
         >
           <div>
-            <div style={{ color: "#64748b", fontSize: 13 }}>
+            <div style={{ color: "#64748b", fontSize: 15 }}>
               Total {typeFilter === "all" ? "paid" : typeFilter} in {month.format("MMMM YYYY")}
-              {filterUnit ? ` - ${unitOptions.find((o) => o.value === filterUnit)?.label}` : ""}
+              {filterUnit ? ` - ${unitLabel(filterUnit)}` : ""}
             </div>
             <div style={{ fontSize: 28, fontWeight: 700 }}>{loading ? "..." : fmt(total)}</div>
             {typeFilter === "all" && monthTypes.length > 1 && (
-              <div style={{ fontSize: 13, color: "#64748b", marginTop: 4 }}>
+              <div style={{ fontSize: 15, color: "#64748b", marginTop: 4 }}>
                 {monthTypes.map((t) => `${t} ${fmt(typeTotals.get(t) ?? 0)}`).join(" - ")}
               </div>
             )}
@@ -323,48 +374,75 @@ export default function UtilitiesPage() {
             }
           />
         </Card>
-      ) : (
-        <div className="row-list">
-          {shown.map((b) => {
-            const u = unitOf(b.room_id);
-            return (
-              <div key={b.id} className="row-card">
-                <div>
-                  <div className="row-title">
-                    <Tag color={colorOf(b.utility_type)} style={{ margin: 0 }}>
-                      {b.utility_type}
-                    </Tag>
-                    {u && (
-                      <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
-                        {u.kind === "shop" ? "Shop" : "Room"}
-                      </Tag>
-                    )}
-                    {u?.room_number ?? "-"}
-                  </div>
-                  <div className="row-sub">
-                    {b.meter_number ? `Meter ${b.meter_number} - ` : ""}
-                    {dayjs(b.deposit_date).format("DD MMM YYYY")}
-                  </div>
-                </div>
-                <div className="row-side">
-                  <div className="row-amount">{fmt(b.amount)}</div>
-                  <Button type="text" icon={<EditOutlined />} onClick={() => openEdit(b)} aria-label="Edit" />
-                  {b.invoice_path && (
-                    <Button
-                      type="text"
-                      icon={<EyeOutlined />}
-                      onClick={() => viewInvoice(b.invoice_path!)}
-                      aria-label="View invoice"
-                    />
-                  )}
-                  <Popconfirm title="Delete this bill?" onConfirm={() => removeBill(b)}>
-                    <Button type="text" danger icon={<DeleteOutlined />} />
-                  </Popconfirm>
-                </div>
-              </div>
-            );
+      ) : isMobile ? (
+        <CompactList
+          items={shown.map((b) => {
+            const ids = roomsOf(b);
+            return {
+              key: b.id,
+              title: (
+                <>
+                  <Tag color={colorOf(b.utility_type)} style={{ margin: 0 }}>
+                    {b.utility_type}
+                  </Tag>
+                  <span>{ids.map(unitLabel).join(", ")}</span>
+                </>
+              ),
+              sub: [
+                b.meter_number && `Meter ${b.meter_number}`,
+                b.holding_number && `Holding ${b.holding_number}`,
+                dayjs(b.deposit_date).format("DD MMM YYYY"),
+              ]
+                .filter(Boolean)
+                .join(" - "),
+              amount: fmt(b.amount),
+              actions: billActions(b),
+            };
           })}
-        </div>
+        />
+      ) : (
+        <Card className="soft-card" styles={{ body: { padding: 0 } }}>
+          <Table<Bill>
+            rowKey="id"
+            dataSource={shown}
+            size="middle"
+            pagination={false}
+            columns={[
+              {
+                title: "Date",
+                dataIndex: "deposit_date",
+                width: 110,
+                defaultSortOrder: "descend",
+                sorter: (x, y) => x.deposit_date.localeCompare(y.deposit_date),
+                render: (v: string) => dayjs(v).format("DD MMM"),
+              },
+              {
+                title: "Type",
+                dataIndex: "utility_type",
+                width: 130,
+                render: (v: string) => (
+                  <Tag color={colorOf(v)} style={{ margin: 0 }}>
+                    {v}
+                  </Tag>
+                ),
+              },
+              {
+                title: "Rooms & shops",
+                render: (_, b) => roomsOf(b).map(unitLabel).join(", "),
+              },
+              { title: "Meter", dataIndex: "meter_number", render: (v: string | null) => v ?? "-" },
+              { title: "Holding", dataIndex: "holding_number", render: (v: string | null) => v ?? "-" },
+              {
+                title: "Amount",
+                dataIndex: "amount",
+                align: "right",
+                sorter: (x, y) => Number(x.amount) - Number(y.amount),
+                render: (v: number) => <b>{fmt(v)}</b>,
+              },
+              { title: "", align: "right", width: 150, render: (_, b) => billActions(b) },
+            ]}
+          />
+        </Card>
       )}
 
       <Modal
@@ -378,6 +456,7 @@ export default function UtilitiesPage() {
         <Form
           key={editing?.id ?? "new"}
           form={form}
+          preserve={false}
           layout="vertical"
           onFinish={saveBill}
           initialValues={initialValues}
@@ -386,40 +465,88 @@ export default function UtilitiesPage() {
           <Form.Item
             name="utility_type"
             label="Utility type"
-            extra="Pick one or type your own, for example Electricity, Gas, Water, Internet."
+            extra="Type any kind of bill, or pick one from the list."
             rules={[{ required: true, whitespace: true, message: "Enter the utility type" }]}
           >
             <AutoComplete
               size="large"
               options={knownTypes.map((t) => ({ value: t }))}
-              placeholder="e.g. Electricity"
-              filterOption={(input, option) =>
-                (option?.value as string).toLowerCase().includes(input.toLowerCase())
-              }
+              placeholder="e.g. Electricity, Internet, Garbage"
+              showSearch={{
+                filterOption: (input, option) =>
+                  (option?.value as string).toLowerCase().includes(input.toLowerCase()),
+              }}
             />
           </Form.Item>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Form.Item name="meter_number" label="Meter number">
+              <AutoComplete
+                size="large"
+                options={distinct("meter_number").map((value) => ({ value }))}
+                placeholder="Pick or type"
+                onSelect={(v: string) => fillFrom("meter_number", v)}
+                showSearch={{
+                  filterOption: (input, o) =>
+                    (o?.value as string).toLowerCase().includes(input.toLowerCase()),
+                }}
+              />
+            </Form.Item>
+            <Form.Item name="holding_number" label="Holding number">
+              <AutoComplete
+                size="large"
+                options={distinct("holding_number").map((value) => ({ value }))}
+                placeholder="Pick or type"
+                onSelect={(v: string) => fillFrom("holding_number", v)}
+                showSearch={{
+                  filterOption: (input, o) =>
+                    (o?.value as string).toLowerCase().includes(input.toLowerCase()),
+                }}
+              />
+            </Form.Item>
+          </div>
+
           <Form.Item
-            name="room_id"
-            label="Room / shop"
-            rules={[{ required: true, message: "Select a room or shop" }]}
+            name="room_ids"
+            label="Rooms & shops on this meter"
+            extra="Pick every room or shop this bill covers."
+            rules={[{ required: true, type: "array", min: 1, message: "Pick at least one room or shop" }]}
           >
             <Select
               size="large"
+              mode="multiple"
               showSearch={{ optionFilterProp: "label" }}
-              placeholder="Select"
+              placeholder="Select rooms and shops"
               options={unitOptions}
-              onChange={onUnitChange}
             />
           </Form.Item>
-          <Form.Item name="meter_number" label="Meter / account number (optional)">
-            <Input size="large" />
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <Form.Item
+              name="amount"
+              label="Bill amount (total)"
+              rules={[{ required: true, message: "Enter amount" }]}
+            >
+              <InputNumber size="large" min={0} style={{ width: "100%" }} />
+            </Form.Item>
+            <Form.Item name="deposit_date" label="Date" rules={[{ required: true }]}>
+              <DatePicker size="large" allowClear={false} style={{ width: "100%" }} />
+            </Form.Item>
+          </div>
+
+          <Form.Item noStyle shouldUpdate>
+            {({ getFieldValue }) => {
+              const count = (getFieldValue("room_ids") as string[] | undefined)?.length ?? 0;
+              const amount = getFieldValue("amount") as number | undefined;
+              return count > 1 && amount ? (
+                <p style={{ color: "#64748b", marginTop: -8 }}>
+                  {count} rooms and shops share this bill - about {fmt(Math.round(amount / count))}{" "}
+                  each.
+                </p>
+              ) : null;
+            }}
           </Form.Item>
-          <Form.Item name="amount" label="Amount" rules={[{ required: true, message: "Enter amount" }]}>
-            <InputNumber size="large" min={0} style={{ width: "100%" }} />
-          </Form.Item>
-          <Form.Item name="deposit_date" label="Date" rules={[{ required: true }]}>
-            <DatePicker allowClear={false} style={{ width: "100%" }} />
-          </Form.Item>
+
           <Form.Item
             name="invoice"
             label={editing?.invoice_path ? "Replace invoice image (optional)" : "Invoice image (optional)"}

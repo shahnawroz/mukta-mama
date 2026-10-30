@@ -10,7 +10,7 @@ Rent tracker for rooms and shops. Add rooms and shops with their rent and advanc
 - **Rent:** monthly Paid / Due table with a filter for rooms or shops. Every month starts as Due. Clicking Paid saves the date and who marked it
 - **Income:** total collected, expenses, cash on hand and in bank. Transfer to bank deducts from cash. Monthly summary carries cash forward month to month
 - **Expenses:** add what you spent and what it was for. It comes out of cash on hand
-- **Utilities:** record bills such as electricity, gas or water per room or shop. You type the utility type, then the amount, date and an invoice image. Bills can be filtered and totalled by type
+- **Utilities:** record any bill you pay for the building (electricity, gas, water, internet, garbage, maintenance or anything else). You type the bill type, the meter and holding number, pick the rooms and shops it covers, then add the amount, date and an invoice image. Bills can be filtered and totalled by type
 - Responsive, with a full-screen hamburger menu on mobile
 
 ## How the money is counted

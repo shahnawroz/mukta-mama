@@ -16,12 +16,16 @@ export default function Providers({ children }: { children: React.ReactNode }) {
             fontFamily:
               "var(--font-sans), -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
             colorBgLayout: "#f4f5fb",
+            fontSize: 16,
+            controlHeight: 42,
+            controlHeightLG: 50,
+            controlHeightSM: 34,
           },
           components: {
             Card: { borderRadiusLG: 16 },
-            Table: { headerBg: "#f8f9fd", headerColor: "#64748b" },
+            Table: { headerBg: "#f8f9fd", headerColor: "#334155", fontWeightStrong: 700 },
             Layout: { siderBg: "#ffffff", headerBg: "#ffffff" },
-            Menu: { itemBorderRadius: 10, itemHeight: 44 },
+            Menu: { itemBorderRadius: 10, itemHeight: 50 },
           },
         }}
       >

@@ -174,3 +174,10 @@ alter table public.advance_returns add column if not exists paid_from text not n
 alter table public.advance_moves add column if not exists room_id uuid
   references public.rooms(id) on delete set null;
 alter table public.advance_moves add column if not exists room_label text;
+
+-- A utility bill can have both a meter number and a holding number.
+alter table public.electricity_deposits add column if not exists holding_number text;
+
+-- One bill (one meter / holding number) can cover several rooms and shops.
+alter table public.electricity_deposits add column if not exists room_ids uuid[] not null default '{}';
+update public.electricity_deposits set room_ids = array[room_id] where room_ids = '{}';

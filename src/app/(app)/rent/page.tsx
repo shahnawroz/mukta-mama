@@ -22,6 +22,7 @@ import {
 import { LeftOutlined, RightOutlined, SearchOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { fetchAll } from "@/lib/fetchAll";
 import { useIsMobile } from "@/lib/useIsMobile";
 import PageHeader from "@/components/PageHeader";
 
@@ -85,16 +86,24 @@ export default function RentPage() {
   const load = useCallback(async () => {
     const supabase = createClient();
     const [rooms, payments] = await Promise.all([
-      supabase
-        .from("rooms")
-        .select("id, kind, room_number, rent")
-        .order("kind", { ascending: false })
-        .order("room_number"),
-      supabase
-        .from("payments")
-        .select("id, room_id, amount, advance_applied, paid_at")
-        .eq("month", monthKey)
-        .order("paid_at"),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("rooms")
+          .select("id, kind, room_number, rent")
+          .order("kind", { ascending: false })
+          .order("room_number")
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("payments")
+          .select("id, room_id, amount, advance_applied, paid_at")
+          .eq("month", monthKey)
+          .order("paid_at")
+          .order("id")
+          .range(lo, hi),
+      ),
     ]);
     const err = rooms.error ?? payments.error;
     if (err) message.error(err.message);
@@ -207,7 +216,7 @@ export default function RentPage() {
     return (
       <span style={{ display: "inline-flex", alignItems: "center", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
         {st === "paid" && last && (
-          <span style={{ color: "#64748b", fontSize: 13 }}>{dayjs(last.paid_at).format("DD MMM")}</span>
+          <span style={{ color: "#64748b", fontSize: 15 }}>{dayjs(last.paid_at).format("DD MMM")}</span>
         )}
         {(st === "due" || st === "part") && (
           <Button onClick={() => setPartUnit(r)}>Part</Button>
@@ -273,10 +282,10 @@ export default function RentPage() {
           <b style={{ color: "#4f46e5" }}>{percent}%</b>
         </div>
         <Progress percent={percent} strokeColor="#4f46e5" showInfo={false} />
-        <div style={{ display: "flex", gap: 16, fontSize: 13, flexWrap: "wrap" }}>
-          <span style={{ color: "#16a34a" }}>{fullyPaid} paid</span>
-          {partial > 0 && <span style={{ color: "#d97706" }}>{partial} part paid</span>}
-          <span style={{ color: "#e11d48" }}>
+        <div style={{ display: "flex", gap: 16, fontSize: 15, flexWrap: "wrap" }}>
+          <span style={{ color: "#16a34a", fontWeight: 700 }}>{fullyPaid} paid</span>
+          {partial > 0 && <span style={{ color: "#d97706", fontWeight: 700 }}>{partial} part paid</span>}
+          <span style={{ color: "#e11d48", fontWeight: 700 }}>
             {owing} owing - {fmt(total - paidTotal)} due
           </span>
         </div>
@@ -348,11 +357,11 @@ export default function RentPage() {
                       Rent <b>{fmt(r.rent)}</b>
                     </span>
                     {r.paid > 0 && r.remaining > 0 && (
-                      <span style={{ color: "#e11d48" }}>
+                      <span style={{ color: "#e11d48", fontWeight: 700 }}>
                         Due <b>{fmt(r.remaining)}</b>
                       </span>
                     )}
-                    {s === "paid" && <span style={{ color: "#16a34a" }}>Paid</span>}
+                    {s === "paid" && <span style={{ color: "#16a34a", fontWeight: 700 }}>Paid</span>}
                     {s === "norent" && <span style={{ color: "#94a3b8" }}>No rent set</span>}
                   </div>
                 </div>
@@ -367,19 +376,23 @@ export default function RentPage() {
             rowKey="id"
             dataSource={visible}
             size="middle"
-            pagination={{ pageSize: 50, hideOnSinglePage: true, showSizeChanger: false }}
+            pagination={false}
+            sticky
             columns={[
+              {
+                title: "Type",
+                dataIndex: "kind",
+                width: 100,
+                sorter: (a, b) => a.kind.localeCompare(b.kind),
+                render: (k: Kind) => <TypeTag kind={k} />,
+              },
               {
                 title: "Name",
                 dataIndex: "room_number",
+                width: 240,
                 sorter: (a, b) =>
                   a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
-                render: (_, r) => (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <TypeTag kind={r.kind} />
-                    <b>{r.room_number}</b>
-                  </span>
-                ),
+                render: (v: string) => <b style={{ whiteSpace: "nowrap" }}>{v}</b>,
               },
               {
                 title: "Rent",
@@ -392,7 +405,7 @@ export default function RentPage() {
                 align: "right",
                 render: (_, r) =>
                   r.paid > 0 ? (
-                    <span style={{ color: "#16a34a" }}>{fmt(r.paid)}</span>
+                    <span style={{ color: "#16a34a", fontWeight: 700 }}>{fmt(r.paid)}</span>
                   ) : (
                     <span style={{ color: "#cbd5e1" }}>-</span>
                   ),
@@ -414,7 +427,7 @@ export default function RentPage() {
               {
                 title: "",
                 align: "right",
-                width: 260,
+                width: 250,
                 render: (_, r) => action(r),
               },
             ]}
@@ -439,6 +452,7 @@ export default function RentPage() {
         <Form
           key={partUnit?.id}
           form={partForm}
+          preserve={false}
           layout="vertical"
           onFinish={payPart}
           autoComplete="off"

@@ -12,6 +12,7 @@ import {
 } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
 import { createClient } from "@/lib/supabase/client";
+import { fetchAll } from "@/lib/fetchAll";
 import { useIsMobile } from "@/lib/useIsMobile";
 import PageHeader from "@/components/PageHeader";
 
@@ -41,6 +42,35 @@ function sumOf(units: Unit[], paidByUnit: Map<string, number>) {
   return { count: units.length, paidCount, total, paid };
 }
 
+function FlowRow({
+  label,
+  value,
+  color,
+  strong,
+}: {
+  label: string;
+  value: string;
+  color?: string;
+  strong?: boolean;
+}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        justifyContent: "space-between",
+        gap: 12,
+        padding: "6px 0",
+        marginTop: strong ? 6 : 0,
+        borderTop: strong ? "1px solid #eceef6" : "none",
+        fontWeight: strong ? 700 : 400,
+      }}
+    >
+      <span style={{ color: strong ? "#0f172a" : "#64748b" }}>{label}</span>
+      <span style={{ color }}>{value}</span>
+    </div>
+  );
+}
+
 function GroupRow({
   label,
   color,
@@ -62,9 +92,9 @@ function GroupRow({
         </span>
       </div>
       <Progress percent={percent} strokeColor={color} showInfo={false} size="small" />
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13 }}>
-        <span style={{ color: "#16a34a" }}>Paid {fmt(data.paid)}</span>
-        <span style={{ color: "#e11d48" }}>Due {fmt(data.total - data.paid)}</span>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 15 }}>
+        <span style={{ color: "#16a34a", fontWeight: 700 }}>Paid {fmt(data.paid)}</span>
+        <span style={{ color: "#e11d48", fontWeight: 700 }}>Due {fmt(data.total - data.paid)}</span>
         <span style={{ color: "#64748b" }}>Total {fmt(data.total)}</span>
       </div>
     </div>
@@ -89,17 +119,46 @@ export default function DashboardPage() {
   useEffect(() => {
     const supabase = createClient();
     Promise.all([
-      supabase.from("rooms").select("id, kind, room_number, rent, advance").order("room_number"),
-      supabase.from("payments").select("room_id, month, paid_at, amount, advance_applied"),
-      supabase.from("bank_transfers").select("amount, transfer_date"),
-      supabase.from("expenses").select("amount, expense_date"),
-      supabase.from("electricity_deposits").select("amount, deposit_date"),
-      supabase.from("advance_moves").select("amount, destination, move_date"),
-      supabase
-        .from("advance_returns")
-        .select("amount, return_date")
-        .eq("kind", "refund")
-        .eq("paid_from", "cash"),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("rooms")
+          .select("id, kind, room_number, rent, advance")
+          .order("room_number")
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("payments")
+          .select("room_id, month, paid_at, amount, advance_applied")
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase.from("bank_transfers").select("amount, transfer_date").order("id").range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase.from("expenses").select("amount, expense_date").order("id").range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase.from("electricity_deposits").select("amount, deposit_date").order("id").range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("advance_moves")
+          .select("amount, destination, move_date")
+          .order("id")
+          .range(lo, hi),
+      ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("advance_returns")
+          .select("amount, return_date")
+          .eq("kind", "refund")
+          .eq("paid_from", "cash")
+          .order("id")
+          .range(lo, hi),
+      ),
     ]).then(([rooms, pays, tr, ex, ut, mv, rf]) => {
       const err =
         rooms.error ?? pays.error ?? tr.error ?? ex.error ?? ut.error ?? mv.error ?? rf.error;
@@ -118,7 +177,6 @@ export default function DashboardPage() {
   const loading = !loaded;
   const key = month.format("YYYY-MM-01");
   const inMonth = (d: string) => dayjs(d).isSame(month, "month");
-  const upToMonthEnd = (d: string) => !dayjs(d).isAfter(month.endOf("month"));
   const rentOf = (p: Payment) => Number(p.amount) + Number(p.advance_applied);
 
   // Rent for the selected month. A room can have several payments (part payments).
@@ -135,17 +193,40 @@ export default function DashboardPage() {
   );
   const percent = overall.total ? Math.round((overall.paid / overall.total) * 100) : 0;
 
-  // Cash on hand and bank as they stood at the end of the selected month.
-  // Advance only joins cash or the bank once it is moved; a refund paid out of cash takes it out.
-  const cash =
-    payments.filter((p) => upToMonthEnd(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
-    sum(transfers.filter((t) => upToMonthEnd(t.date))) -
-    sum(expenses.filter((e) => upToMonthEnd(e.date))) +
-    sum(moves.filter((m) => m.dest === "cash" && upToMonthEnd(m.date))) -
-    sum(cashRefunds.filter((r) => upToMonthEnd(r.date)));
-  const inBank =
-    sum(transfers.filter((t) => upToMonthEnd(t.date))) +
-    sum(moves.filter((m) => m.dest === "bank" && upToMonthEnd(m.date)));
+  // Balances at the end of any date. Nothing is ever reset: every month starts with what the
+  // month before ended with, then adds its own rent and takes off its own spending.
+  const cashAt = (end: Dayjs) => {
+    const ok = (d: string) => !dayjs(d).isAfter(end);
+    return (
+      payments.filter((p) => ok(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
+      sum(transfers.filter((t) => ok(t.date))) -
+      sum(expenses.filter((e) => ok(e.date))) +
+      // Advance only joins cash or the bank once it is moved; a refund paid out of cash takes it out.
+      sum(moves.filter((m) => m.dest === "cash" && ok(m.date))) -
+      sum(cashRefunds.filter((r) => ok(r.date)))
+    );
+  };
+  const bankAt = (end: Dayjs) => {
+    const ok = (d: string) => !dayjs(d).isAfter(end);
+    return (
+      sum(transfers.filter((t) => ok(t.date))) +
+      sum(moves.filter((m) => m.dest === "bank" && ok(m.date)))
+    );
+  };
+  const netAt = (end: Dayjs) => {
+    const ok = (d: string) => !dayjs(d).isAfter(end);
+    return (
+      payments.filter((p) => ok(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
+      sum(expenses.filter((e) => ok(e.date)))
+    );
+  };
+  const monthEnd = month.endOf("month");
+  const prevEnd = month.subtract(1, "month").endOf("month");
+  const cash = cashAt(monthEnd);
+  const inBank = bankAt(monthEnd);
+  const openingCash = cashAt(prevEnd);
+  const openingBank = bankAt(prevEnd);
+  const netToDate = netAt(monthEnd);
   const advance = units.reduce((s, u) => s + Number(u.advance), 0);
 
   // Money movements inside the selected month.
@@ -153,6 +234,11 @@ export default function DashboardPage() {
   const expensesM = sum(expenses.filter((e) => inMonth(e.date)));
   const utilitiesM = sum(utilities.filter((u) => inMonth(u.date)));
   const bankM = sum(transfers.filter((t) => inMonth(t.date)));
+  const advCashM =
+    sum(moves.filter((m) => m.dest === "cash" && inMonth(m.date))) -
+    sum(cashRefunds.filter((r) => inMonth(r.date)));
+  const advBankM = sum(moves.filter((m) => m.dest === "bank" && inMonth(m.date)));
+  const prevName = month.subtract(1, "month").format("MMMM");
 
   const isCurrent = month.isSame(dayjs(), "month");
 
@@ -187,28 +273,32 @@ export default function DashboardPage() {
 
       <div className="hero">
         <div className="hero-label">
-          Cash on hand {isCurrent ? "now" : `at the end of ${month.format("MMMM YYYY")}`}
+          Money you have {isCurrent ? "right now" : `at the end of ${month.format("MMMM YYYY")}`}
         </div>
-        <div className="hero-amount">{loading ? "..." : fmt(cash)}</div>
+        <div className="hero-amount">{loading ? "..." : fmt(cash + inBank)}</div>
         <div className="hero-grid">
+          <div className="hero-mini">
+            <span>Cash on hand</span>
+            <b>{fmt(cash)}</b>
+          </div>
           <div className="hero-mini">
             <span>In bank</span>
             <b>{fmt(inBank)}</b>
           </div>
           <div className="hero-mini">
-            <span>Advance held</span>
-            <b>{fmt(advance)}</b>
+            <span>Net profit in {month.format("MMM")}</span>
+            <b>{fmt(collectedM - expensesM)}</b>
           </div>
           <div className="hero-mini">
-            <span>Expenses in {month.format("MMM")}</span>
-            <b>{fmt(expensesM)}</b>
-          </div>
-          <div className="hero-mini">
-            <span>Utilities in {month.format("MMM")}</span>
-            <b>{fmt(utilitiesM)}</b>
+            <span>Net profit, all months</span>
+            <b>{fmt(netToDate)}</b>
           </div>
         </div>
       </div>
+      <p style={{ color: "#64748b", fontSize: 15, margin: "8px 4px 0" }}>
+        Net profit = rent received - expenses. Advance held ({fmt(advance)}) is the tenants&apos; security
+        money and is not counted as yours until you move it.
+      </p>
 
       <div className="quick-actions">
         <Button type="primary" size="large" icon={<WalletOutlined />} onClick={() => router.push("/rent")}>
@@ -220,6 +310,33 @@ export default function DashboardPage() {
         <Button size="large" icon={<BankOutlined />} onClick={() => router.push("/income")}>
           Transfer to bank
         </Button>
+      </div>
+
+      <div className="section-title">Cash & bank - each month starts where the last one ended</div>
+      <div className="unit-list">
+        <Card className="soft-card" title="Cash on hand" loading={loading}>
+          <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingCash)} />
+          <FlowRow label="Rent received" value={`+ ${fmt(collectedM)}`} color="#16a34a" />
+          <FlowRow label="Expenses" value={`- ${fmt(expensesM)}`} color="#e11d48" />
+          <FlowRow label="Sent to bank" value={`- ${fmt(bankM)}`} />
+          {advCashM !== 0 && (
+            <FlowRow
+              label="Advance moved in / refunded"
+              value={`${advCashM > 0 ? "+" : "-"} ${fmt(Math.abs(advCashM))}`}
+            />
+          )}
+          <FlowRow
+            strong
+            label={`Cash on hand, end of ${month.format("MMMM")}`}
+            value={fmt(cash)}
+          />
+        </Card>
+        <Card className="soft-card" title="In bank" loading={loading}>
+          <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingBank)} />
+          <FlowRow label="Sent from cash" value={`+ ${fmt(bankM)}`} color="#4f46e5" />
+          {advBankM > 0 && <FlowRow label="Advance moved to bank" value={`+ ${fmt(advBankM)}`} />}
+          <FlowRow strong label={`In bank, end of ${month.format("MMMM")}`} value={fmt(inBank)} />
+        </Card>
       </div>
 
       <div className="section-title">{month.format("MMMM YYYY")} in numbers</div>
@@ -234,7 +351,14 @@ export default function DashboardPage() {
             color: collectedM - expensesM >= 0 ? "#16a34a" : "#e11d48",
           },
           { label: "Utilities", value: utilitiesM, color: "#0f172a" },
+          { label: "Advance held (tenants' money)", value: advance, color: "#0f172a" },
           { label: "Sent to bank", value: bankM, color: "#4f46e5" },
+          { label: "Total money (cash + bank)", value: cash + inBank, color: "#0f172a" },
+          {
+            label: "Net income to date (all months)",
+            value: netToDate,
+            color: netToDate >= 0 ? "#16a34a" : "#e11d48",
+          },
         ].map((x) => (
           <div key={x.label} className="row-card">
             <span style={{ color: "#64748b" }}>{x.label}</span>
@@ -257,7 +381,7 @@ export default function DashboardPage() {
               <b style={{ color: "#4f46e5" }}>{percent}%</b>
             </div>
             <Progress percent={percent} strokeColor="#4f46e5" showInfo={false} />
-            <div style={{ color: "#64748b", fontSize: 13 }}>
+            <div style={{ color: "#64748b", fontSize: 15 }}>
               {overall.paidCount} of {overall.count} paid - {fmt(overall.total - overall.paid)} still due
             </div>
             <GroupRow label="Rooms" color="#2563eb" data={rooms} />
@@ -276,8 +400,8 @@ export default function DashboardPage() {
             image={Empty.PRESENTED_IMAGE_SIMPLE}
           />
         ) : isMobile ? (
-          <div>
-            {unpaid.slice(0, 10).map((u, i) => {
+          <div style={{ maxHeight: 520, overflowY: "auto" }}>
+            {unpaid.map((u, i) => {
               const part = (paidByUnit.get(u.id) ?? 0) > 0;
               return (
                 <div
@@ -310,35 +434,34 @@ export default function DashboardPage() {
                 </div>
               );
             })}
-            {unpaid.length > 10 && (
-              <div style={{ padding: 12, textAlign: "center", borderTop: "1px solid #f1f5f9" }}>
-                <Button type="link" onClick={() => router.push("/rent")}>
-                  View all {unpaid.length}
-                </Button>
-              </div>
-            )}
           </div>
         ) : (
           <Table<Unit>
             rowKey="id"
             dataSource={unpaid}
             size="small"
-            pagination={{ pageSize: 10, hideOnSinglePage: true, showSizeChanger: false }}
+            pagination={false}
+            scroll={{ y: 520 }}
             onRow={() => ({ onClick: () => router.push("/rent"), style: { cursor: "pointer" } })}
             columns={[
               {
+                title: "Type",
+                dataIndex: "kind",
+                width: 100,
+                sorter: (a, b) => a.kind.localeCompare(b.kind),
+                render: (k: Kind) => (
+                  <Tag color={k === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
+                    {k === "shop" ? "Shop" : "Room"}
+                  </Tag>
+                ),
+              },
+              {
                 title: "Name",
                 dataIndex: "room_number",
+                width: 240,
                 sorter: (a, b) =>
                   a.room_number.localeCompare(b.room_number, undefined, { numeric: true }),
-                render: (_, u) => (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <Tag color={u.kind === "shop" ? "purple" : "blue"} style={{ margin: 0 }}>
-                      {u.kind === "shop" ? "Shop" : "Room"}
-                    </Tag>
-                    <b>{u.room_number}</b>
-                  </span>
-                ),
+                render: (v: string) => <b style={{ whiteSpace: "nowrap" }}>{v}</b>,
               },
               { title: "Rent", dataIndex: "rent", align: "right", render: (v: number) => fmt(v) },
               {
@@ -346,7 +469,7 @@ export default function DashboardPage() {
                 align: "right",
                 render: (_, u) =>
                   (paidByUnit.get(u.id) ?? 0) > 0 ? (
-                    <span style={{ color: "#16a34a" }}>{fmt(paidByUnit.get(u.id) ?? 0)}</span>
+                    <span style={{ color: "#16a34a", fontWeight: 700 }}>{fmt(paidByUnit.get(u.id) ?? 0)}</span>
                   ) : (
                     <span style={{ color: "#cbd5e1" }}>-</span>
                   ),

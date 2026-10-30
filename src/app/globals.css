@@ -405,3 +405,89 @@ body {
 .unit-card.part {
   border-left-color: #f59e0b;
 }
+
+/* ---------- larger, easier-to-read text ---------- */
+body {
+  font-size: 16px;
+}
+
+.page-h1 {
+  font-size: 30px;
+}
+
+.page-sub {
+  font-size: 16px;
+}
+
+.section-title {
+  font-size: 19px;
+}
+
+.hero-label {
+  font-size: 16px;
+}
+
+.hero-amount {
+  font-size: 48px;
+}
+
+.hero-mini span {
+  font-size: 14px;
+}
+
+.hero-mini b {
+  font-size: 21px;
+}
+
+.unit-num {
+  font-size: 22px;
+}
+
+.unit-rent {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.unit-meta,
+.row-sub {
+  font-size: 14px;
+}
+
+.unit-stats {
+  font-size: 16px;
+}
+
+.row-title {
+  font-size: 17px;
+}
+
+.row-amount {
+  font-size: 20px;
+}
+
+.month-grid {
+  font-size: 15px;
+}
+
+.month-grid span {
+  font-size: 14px;
+}
+
+.ant-tag {
+  font-size: 14px;
+  line-height: 24px;
+  padding-inline: 10px;
+}
+
+.ant-table-thead > tr > th {
+  font-weight: 700;
+}
+
+@media (max-width: 767px) {
+  .page-h1 {
+    font-size: 26px;
+  }
+  .hero-amount {
+    font-size: 40px;
+  }
+}
