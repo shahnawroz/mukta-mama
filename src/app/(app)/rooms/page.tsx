@@ -408,7 +408,7 @@ export default function RoomsPage() {
         <div className="unit-list">
           {visible.map((r) => (
             <div key={r.id} className="unit-card plain">
-              <div>
+              <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="unit-title">
                   <TypeTag kind={r.kind} />
                   <span className="unit-num">{r.room_number}</span>

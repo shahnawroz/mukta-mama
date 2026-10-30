@@ -13,7 +13,6 @@ import {
   Popconfirm,
   Skeleton,
   Table,
-  Tabs,
   Tag,
 } from "antd";
 import { BankOutlined, DeleteOutlined } from "@ant-design/icons";
@@ -72,6 +71,7 @@ function EmptyList({ text }: { text: string }) {
 export default function IncomePage() {
   const { message } = App.useApp();
   const isMobile = useIsMobile();
+  const [tab, setTab] = useState("monthly");
   const [collections, setCollections] = useState<Collection[]>([]);
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
@@ -261,7 +261,7 @@ export default function IncomePage() {
   const tabs = [
     {
       key: "monthly",
-      label: "Months",
+      label: "Month by month",
       children:
         monthly.length === 0 ? (
           <EmptyList text="No income yet. Mark rent as paid on the Rent page." />
@@ -288,9 +288,9 @@ export default function IncomePage() {
                 ].map((x) => (
                   <div
                     key={x.label}
-                    style={{ display: "flex", justifyContent: "space-between", padding: "4px 0" }}
+                    style={{ display: "flex", justifyContent: "space-between", padding: "6px 0" }}
                   >
-                    <span style={{ color: "#64748b" }}>{x.label}</span>
+                    <span style={{ color: "#334155", fontWeight: 600 }}>{x.label}</span>
                     <b style={{ color: x.color }}>{x.value}</b>
                   </div>
                 ))}
@@ -362,7 +362,7 @@ export default function IncomePage() {
     },
     {
       key: "collections",
-      label: "Collected",
+      label: "Rent collected",
       children:
         collections.length === 0 ? (
           <EmptyList text="No rent collected yet" />
@@ -437,7 +437,7 @@ export default function IncomePage() {
     },
     {
       key: "transfers",
-      label: "Bank",
+      label: "Bank transfers",
       children:
         transfers.length === 0 ? (
           <EmptyList text="No bank transfers yet" />
@@ -607,7 +607,25 @@ export default function IncomePage() {
       </div>
 
       <div style={{ marginTop: 20 }}>
-        {loading ? <Skeleton active /> : <Tabs items={tabs} />}
+        {loading ? (
+          <Skeleton active />
+        ) : (
+          <>
+            <div className="tab-grid">
+              {tabs.map((t) => (
+                <Button
+                  key={t.key}
+                  size="large"
+                  type={tab === t.key ? "primary" : "default"}
+                  onClick={() => setTab(t.key)}
+                >
+                  {t.label}
+                </Button>
+              ))}
+            </div>
+            {tabs.find((t) => t.key === tab)?.children}
+          </>
+        )}
       </div>
 
       <Modal

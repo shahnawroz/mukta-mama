@@ -145,7 +145,7 @@ export default function ExpensesPage() {
       />
 
       <Card className="soft-card" style={{ marginBottom: 16 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
           <div>
             <div style={{ color: "#64748b", fontSize: 15 }}>Spent in {month.format("MMMM YYYY")}</div>
             <div style={{ fontSize: 28, fontWeight: 700, color: "#e11d48" }}>

@@ -58,15 +58,27 @@ function FlowRow({
       style={{
         display: "flex",
         justifyContent: "space-between",
-        gap: 12,
-        padding: "6px 0",
-        marginTop: strong ? 6 : 0,
+        alignItems: "baseline",
+        gap: 24,
+        padding: strong ? "12px 0 4px" : "10px 0",
+        marginTop: strong ? 8 : 0,
         borderTop: strong ? "1px solid #eceef6" : "none",
-        fontWeight: strong ? 700 : 400,
+        fontWeight: strong ? 800 : 600,
+        fontSize: strong ? 18 : 16,
       }}
     >
-      <span style={{ color: strong ? "#0f172a" : "#64748b" }}>{label}</span>
-      <span style={{ color }}>{value}</span>
+      <span style={{ color: strong ? "#0f172a" : "#334155", minWidth: 0 }}>{label}</span>
+      <span
+        style={{
+          color,
+          fontWeight: 700,
+          whiteSpace: "nowrap",
+          flexShrink: 0,
+          fontVariantNumeric: "tabular-nums",
+        }}
+      >
+        {value}
+      </span>
     </div>
   );
 }
@@ -238,7 +250,7 @@ export default function DashboardPage() {
     sum(moves.filter((m) => m.dest === "cash" && inMonth(m.date))) -
     sum(cashRefunds.filter((r) => inMonth(r.date)));
   const advBankM = sum(moves.filter((m) => m.dest === "bank" && inMonth(m.date)));
-  const prevName = month.subtract(1, "month").format("MMMM");
+  const prevName = month.subtract(1, "month").format("MMM");
 
   const isCurrent = month.isSame(dayjs(), "month");
 
@@ -290,7 +302,7 @@ export default function DashboardPage() {
             <b>{fmt(collectedM - expensesM)}</b>
           </div>
           <div className="hero-mini">
-            <span>Net profit, all months</span>
+            <span>Total net profit</span>
             <b>{fmt(netToDate)}</b>
           </div>
         </div>
@@ -313,7 +325,13 @@ export default function DashboardPage() {
       </div>
 
       <div className="section-title">Cash & bank - each month starts where the last one ended</div>
-      <div className="unit-list">
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(340px, 100%), 1fr))",
+          gap: 12,
+        }}
+      >
         <Card className="soft-card" title="Cash on hand" loading={loading}>
           <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingCash)} />
           <FlowRow label="Rent received" value={`+ ${fmt(collectedM)}`} color="#16a34a" />
@@ -327,7 +345,7 @@ export default function DashboardPage() {
           )}
           <FlowRow
             strong
-            label={`Cash on hand, end of ${month.format("MMMM")}`}
+            label={`Cash on hand (end of ${month.format("MMM")})`}
             value={fmt(cash)}
           />
         </Card>
@@ -335,7 +353,7 @@ export default function DashboardPage() {
           <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingBank)} />
           <FlowRow label="Sent from cash" value={`+ ${fmt(bankM)}`} color="#4f46e5" />
           {advBankM > 0 && <FlowRow label="Advance moved to bank" value={`+ ${fmt(advBankM)}`} />}
-          <FlowRow strong label={`In bank, end of ${month.format("MMMM")}`} value={fmt(inBank)} />
+          <FlowRow strong label={`In bank (end of ${month.format("MMM")})`} value={fmt(inBank)} />
         </Card>
       </div>
 

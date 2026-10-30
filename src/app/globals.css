@@ -128,7 +128,7 @@ body {
 /* ---------- unit cards (rent, rooms & shops) ---------- */
 .unit-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -313,7 +313,7 @@ body {
 /* ---------- generic row cards (income, expenses, electricity) ---------- */
 .row-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -489,5 +489,59 @@ body {
   }
   .hero-amount {
     font-size: 40px;
+  }
+}
+
+/* ---------- phone fixes ---------- */
+body {
+  overflow-x: hidden;
+}
+
+/* two fields side by side on a computer, one under the other on a phone */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+@media (max-width: 767px) {
+  .two-col {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+  /* buttons that do not fit beside the name drop to their own line */
+  .unit-card.wrappable {
+    flex-wrap: wrap;
+  }
+  .unit-action.wrap {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .month-nav {
+    flex-wrap: wrap;
+  }
+  .ant-modal .ant-modal-content {
+    padding: 20px 16px;
+  }
+  .ant-tabs-nav {
+    margin-bottom: 12px;
+  }
+}
+
+/* a row of big buttons that switches between sections; 2 x 2 on a phone so every name fits */
+.tab-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.tab-grid .ant-btn {
+  font-weight: 600;
+}
+
+@media (max-width: 767px) {
+  .tab-grid {
+    grid-template-columns: repeat(2, 1fr);
   }
 }

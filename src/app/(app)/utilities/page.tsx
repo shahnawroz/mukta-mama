@@ -479,7 +479,7 @@ export default function UtilitiesPage() {
             />
           </Form.Item>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="two-col">
             <Form.Item name="meter_number" label="Meter number">
               <AutoComplete
                 size="large"
@@ -521,7 +521,7 @@ export default function UtilitiesPage() {
             />
           </Form.Item>
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div className="two-col">
             <Form.Item
               name="amount"
               label="Bill amount (total)"

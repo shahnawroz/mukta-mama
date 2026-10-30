@@ -345,7 +345,7 @@ export default function RentPage() {
             return (
               <div
                 key={r.id}
-                className={`unit-card ${s === "paid" ? "paid" : s === "part" ? "part" : s === "norent" ? "plain" : "due"}`}
+                className={`unit-card wrappable ${s === "paid" ? "paid" : s === "part" ? "part" : s === "norent" ? "plain" : "due"}`}
               >
                 <div style={{ minWidth: 0 }}>
                   <div className="unit-title">
@@ -365,7 +365,7 @@ export default function RentPage() {
                     {s === "norent" && <span style={{ color: "#94a3b8" }}>No rent set</span>}
                   </div>
                 </div>
-                <div className="unit-action">{action(r)}</div>
+                <div className="unit-action wrap">{action(r)}</div>
               </div>
             );
           })}
