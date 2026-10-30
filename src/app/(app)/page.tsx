@@ -360,8 +360,13 @@ export default function DashboardPage() {
       <div className="section-title">{month.format("MMMM YYYY")} in numbers</div>
       <div className="unit-list">
         {[
-          { label: "Rent due this month", value: overall.total, color: "#0f172a" },
+          { label: "Total rent for this month", value: overall.total, color: "#0f172a" },
           { label: "Rent received", value: collectedM, color: "#16a34a" },
+          {
+            label: "Still to collect",
+            value: overall.total - overall.paid,
+            color: overall.total - overall.paid > 0 ? "#e11d48" : "#16a34a",
+          },
           { label: "Expenses", value: expensesM, color: "#e11d48" },
           {
             label: "Net income (received - expenses)",
