@@ -49,6 +49,7 @@ type Bill = {
   amount: number;
   deposit_date: string;
   invoice_path: string | null;
+  paid_from: "cash" | "bank";
 };
 type FormValues = {
   utility_type: string;
@@ -57,6 +58,7 @@ type FormValues = {
   holding_number?: string;
   room_ids: string[];
   amount: number;
+  paid_from: "cash" | "bank";
   invoice?: UploadFile[];
 };
 
@@ -65,6 +67,11 @@ const DEFAULT_TYPES = ["Electricity", "Gas", "Water", "Internet", "Garbage", "Ma
 const TAG_COLORS = ["gold", "cyan", "geekblue", "green", "magenta", "orange", "purple", "volcano"];
 const fmt = (v: number) => Number(v).toLocaleString();
 const norm = (t: string) => t.trim().toLowerCase();
+const SourceTag = ({ source }: { source: "cash" | "bank" }) => (
+  <Tag color={source === "bank" ? "geekblue" : "green"} style={{ margin: 0 }}>
+    {source === "bank" ? "Bank" : "Cash"}
+  </Tag>
+);
 const roomsOf = (b: Bill) => (b.room_ids?.length ? b.room_ids : [b.room_id]);
 
 export default function UtilitiesPage() {
@@ -97,7 +104,7 @@ export default function UtilitiesPage() {
         supabase
           .from("electricity_deposits")
           .select(
-            "id, room_id, room_ids, utility_type, meter_number, holding_number, amount, deposit_date, invoice_path",
+            "id, room_id, room_ids, utility_type, meter_number, holding_number, amount, deposit_date, invoice_path, paid_from",
           )
           .order("deposit_date", { ascending: false })
           .order("id")
@@ -202,6 +209,7 @@ export default function UtilitiesPage() {
       meter_number: values.meter_number?.trim() || null,
       holding_number: values.holding_number?.trim() || null,
       amount: values.amount,
+      paid_from: values.paid_from,
       deposit_date: values.deposit_date.format("YYYY-MM-DD"),
       invoice_path,
     };
@@ -250,12 +258,14 @@ export default function UtilitiesPage() {
         holding_number: editing.holding_number ?? undefined,
         room_ids: roomsOf(editing),
         amount: Number(editing.amount),
+        paid_from: editing.paid_from,
         invoice: [],
       }
     : {
         deposit_date: month.isSame(dayjs(), "month") ? dayjs() : month.startOf("month"),
         utility_type: typeFilter !== "all" ? typeFilter : undefined,
         room_ids: [],
+        paid_from: "cash",
       };
   const optionsOf = (kind: Kind) =>
     units.filter((u) => u.kind === kind).map((u) => ({ value: u.id, label: u.room_number }));
@@ -392,6 +402,7 @@ export default function UtilitiesPage() {
                 b.meter_number && `Meter ${b.meter_number}`,
                 b.holding_number && `Holding ${b.holding_number}`,
                 dayjs(b.deposit_date).format("DD MMM YYYY"),
+                b.paid_from === "bank" ? "paid from bank" : "paid from cash",
               ]
                 .filter(Boolean)
                 .join(" - "),
@@ -432,6 +443,12 @@ export default function UtilitiesPage() {
               },
               { title: "Meter", dataIndex: "meter_number", render: (v: string | null) => v ?? "-" },
               { title: "Holding", dataIndex: "holding_number", render: (v: string | null) => v ?? "-" },
+              {
+                title: "Paid from",
+                dataIndex: "paid_from",
+                width: 110,
+                render: (v: "cash" | "bank") => <SourceTag source={v} />,
+              },
               {
                 title: "Amount",
                 dataIndex: "amount",
@@ -533,6 +550,17 @@ export default function UtilitiesPage() {
               <DatePicker size="large" allowClear={false} style={{ width: "100%" }} />
             </Form.Item>
           </div>
+
+          <Form.Item name="paid_from" label="Paid from">
+            <Segmented
+              block
+              size="large"
+              options={[
+                { label: "Cash on hand", value: "cash" },
+                { label: "Bank", value: "bank" },
+              ]}
+            />
+          </Form.Item>
 
           <Form.Item noStyle shouldUpdate>
             {({ getFieldValue }) => {

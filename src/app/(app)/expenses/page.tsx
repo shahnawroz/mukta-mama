@@ -13,8 +13,10 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Segmented,
   Skeleton,
   Table,
+  Tag,
 } from "antd";
 import { DeleteOutlined, EditOutlined, LeftOutlined, PlusOutlined, RightOutlined } from "@ant-design/icons";
 import dayjs, { type Dayjs } from "dayjs";
@@ -24,8 +26,21 @@ import { useIsMobile } from "@/lib/useIsMobile";
 import CompactList from "@/components/CompactList";
 import PageHeader from "@/components/PageHeader";
 
-type Expense = { id: string; amount: number; expense_date: string; note: string };
-type FormValues = { amount: number; expense_date: Dayjs; note: string };
+type Source = "cash" | "bank";
+type Expense = {
+  id: string;
+  amount: number;
+  expense_date: string;
+  note: string;
+  paid_from: Source;
+};
+type FormValues = { amount: number; expense_date: Dayjs; note: string; paid_from: Source };
+
+const SourceTag = ({ source }: { source: Source }) => (
+  <Tag color={source === "bank" ? "geekblue" : "green"} style={{ margin: 0 }}>
+    {source === "bank" ? "Bank" : "Cash"}
+  </Tag>
+);
 
 const fmt = (v: number) => Number(v).toLocaleString();
 
@@ -46,7 +61,7 @@ export default function ExpensesPage() {
     const { data, error } = await fetchAll((lo, hi) =>
       supabase
         .from("expenses")
-        .select("id, amount, expense_date, note")
+        .select("id, amount, expense_date, note, paid_from")
         .order("expense_date", { ascending: false })
         .order("id")
         .range(lo, hi),
@@ -83,6 +98,7 @@ export default function ExpensesPage() {
       amount: values.amount,
       expense_date: values.expense_date.format("YYYY-MM-DD"),
       note: values.note.trim(),
+      paid_from: values.paid_from,
     };
     const supabase = createClient();
     const { error } = editing
@@ -115,8 +131,12 @@ export default function ExpensesPage() {
         note: editing.note,
         amount: Number(editing.amount),
         expense_date: dayjs(editing.expense_date),
+        paid_from: editing.paid_from,
       }
-    : { expense_date: month.isSame(dayjs(), "month") ? dayjs() : month.startOf("month") };
+    : {
+        expense_date: month.isSame(dayjs(), "month") ? dayjs() : month.startOf("month"),
+        paid_from: "cash" as Source,
+      };
 
   const rowActions = (e: Expense) => (
     <span style={{ display: "inline-flex", alignItems: "center" }}>
@@ -131,7 +151,7 @@ export default function ExpensesPage() {
     <>
       <PageHeader
         title="Expenses"
-        subtitle="Money spent from the rent you collected. It comes out of cash on hand."
+        subtitle="Money you spent. Choose whether it was paid from cash on hand or from the bank."
         extra={
           <Button
             type="primary"
@@ -182,7 +202,12 @@ export default function ExpensesPage() {
         <CompactList
           items={shown.map((e) => ({
             key: e.id,
-            title: e.note,
+            title: (
+              <>
+                {e.note}
+                <SourceTag source={e.paid_from} />
+              </>
+            ),
             sub: dayjs(e.expense_date).format("DD MMM YYYY"),
             amount: <span style={{ color: "#e11d48" }}>-{fmt(e.amount)}</span>,
             actions: rowActions(e),
@@ -205,6 +230,12 @@ export default function ExpensesPage() {
                 render: (v: string) => dayjs(v).format("DD MMM YYYY"),
               },
               { title: "What it was for", dataIndex: "note" },
+              {
+                title: "Paid from",
+                dataIndex: "paid_from",
+                width: 120,
+                render: (v: Source) => <SourceTag source={v} />,
+              },
               {
                 title: "Amount",
                 dataIndex: "amount",
@@ -249,6 +280,16 @@ export default function ExpensesPage() {
           </Form.Item>
           <Form.Item name="amount" label="Amount" rules={[{ required: true, message: "Enter amount" }]}>
             <InputNumber size="large" min={1} style={{ width: "100%" }} />
+          </Form.Item>
+          <Form.Item name="paid_from" label="Paid from">
+            <Segmented
+              block
+              size="large"
+              options={[
+                { label: "Cash on hand", value: "cash" },
+                { label: "Bank", value: "bank" },
+              ]}
+            />
           </Form.Item>
           <Form.Item name="expense_date" label="Date" rules={[{ required: true }]}>
             <DatePicker allowClear={false} style={{ width: "100%" }} />

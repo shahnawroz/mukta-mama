@@ -181,3 +181,11 @@ alter table public.electricity_deposits add column if not exists holding_number 
 -- One bill (one meter / holding number) can cover several rooms and shops.
 alter table public.electricity_deposits add column if not exists room_ids uuid[] not null default '{}';
 update public.electricity_deposits set room_ids = array[room_id] where room_ids = '{}';
+
+-- Where an expense was paid from: cash on hand or the bank.
+alter table public.expenses add column if not exists paid_from text not null default 'cash'
+  check (paid_from in ('cash', 'bank'));
+
+-- Where a utility bill was paid from: cash on hand or the bank.
+alter table public.electricity_deposits add column if not exists paid_from text not null default 'cash'
+  check (paid_from in ('cash', 'bank'));

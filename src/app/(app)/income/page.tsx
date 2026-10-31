@@ -32,7 +32,13 @@ type Collection = {
   rooms: { kind: "room" | "shop"; room_number: string } | null;
 };
 type Transfer = { id: string; amount: number; transfer_date: string; note: string | null };
-type Expense = { id: string; amount: number; expense_date: string; note: string };
+type Expense = {
+  id: string;
+  amount: number;
+  expense_date: string;
+  note: string;
+  paid_from: "cash" | "bank";
+};
 type AdvanceMove = {
   id: string;
   amount: number;
@@ -57,6 +63,7 @@ type MonthRow = {
   collected: number;
   bank: number;
   spent: number;
+  utilities: number;
   advance: number;
   closing: number;
 };
@@ -77,6 +84,7 @@ export default function IncomePage() {
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [returns, setReturns] = useState<AdvanceReturn[]>([]);
   const [moves, setMoves] = useState<AdvanceMove[]>([]);
+  const [bills, setBills] = useState<{ id: string; amount: number; deposit_date: string; paid_from: "cash" | "bank" }[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -84,7 +92,7 @@ export default function IncomePage() {
 
   const load = useCallback(async () => {
     const supabase = createClient();
-    const [c, t, x, r, mv] = await Promise.all([
+    const [c, t, x, r, mv, ub] = await Promise.all([
       fetchAll((lo, hi) =>
         supabase
           .from("payments")
@@ -105,7 +113,7 @@ export default function IncomePage() {
       fetchAll((lo, hi) =>
         supabase
           .from("expenses")
-          .select("id, amount, expense_date, note")
+          .select("id, amount, expense_date, note, paid_from")
           .order("expense_date", { ascending: false })
           .order("id")
           .range(lo, hi),
@@ -126,14 +134,22 @@ export default function IncomePage() {
           .order("id")
           .range(lo, hi),
       ),
+      fetchAll((lo, hi) =>
+        supabase
+          .from("electricity_deposits")
+          .select("id, amount, deposit_date, paid_from")
+          .order("id")
+          .range(lo, hi),
+      ),
     ]);
-    const err = c.error ?? t.error ?? x.error ?? r.error ?? mv.error;
+    const err = c.error ?? t.error ?? x.error ?? r.error ?? mv.error ?? ub.error;
     if (err) message.error(err.message);
     setCollections(c.data ?? []);
     setTransfers(t.data ?? []);
     setExpenses(x.data ?? []);
     setReturns(r.data ?? []);
     setMoves(mv.data ?? []);
+    setBills(ub.data ?? []);
     setLoading(false);
   }, [message]);
 
@@ -147,6 +163,15 @@ export default function IncomePage() {
   const collected = collections.reduce((s, c) => s + rentOf(c), 0);
   const toBank = transfers.reduce((s, t) => s + Number(t.amount), 0);
   const spent = expenses.reduce((s, e) => s + Number(e.amount), 0);
+  const spentBank = expenses
+    .filter((e) => e.paid_from === "bank")
+    .reduce((s, e) => s + Number(e.amount), 0);
+  const spentCash = spent - spentBank;
+  const utilitiesTotal = bills.reduce((s, b) => s + Number(b.amount), 0);
+  const utilBank = bills
+    .filter((b) => b.paid_from === "bank")
+    .reduce((s, b) => s + Number(b.amount), 0);
+  const utilCash = utilitiesTotal - utilBank;
   // Advance is security money held separately. It only joins cash on hand or the bank once the
   // owner moves it, and a refund paid out of cash takes it back out.
   const movedCash = moves.filter((m) => m.destination === "cash").reduce((s, m) => s + Number(m.amount), 0);
@@ -154,8 +179,8 @@ export default function IncomePage() {
   const cashRefunds = returns
     .filter((r) => r.kind === "refund" && r.paid_from === "cash")
     .reduce((s, r) => s + Number(r.amount), 0);
-  const inBank = toBank + movedBank;
-  const cash = collected - toBank - spent + movedCash - cashRefunds;
+  const inBank = toBank + movedBank - spentBank - utilBank;
+  const cash = collected - toBank - spentCash - utilCash + movedCash - cashRefunds;
 
   // Month-by-month cash book: opening + collected - to bank - expenses = closing, carried forward.
   const monthly = (() => {
@@ -170,6 +195,9 @@ export default function IncomePage() {
     const col = inMonth(collections.map((c) => ({ d: c.paid_at, amount: rentOf(c) })));
     const tr = inMonth(transfers.map((t) => ({ d: t.transfer_date, amount: t.amount })));
     const ex = inMonth(expenses.map((e) => ({ d: e.expense_date, amount: e.amount })));
+    const exCash = inMonth(
+      expenses.filter((e) => e.paid_from !== "bank").map((e) => ({ d: e.expense_date, amount: e.amount })),
+    );
     // Advance moved into cash adds to cash; refunds paid out of cash take it away.
     const adv = new Map<string, number>();
     const addAdv = (d: string, amount: number) => {
@@ -180,7 +208,11 @@ export default function IncomePage() {
     returns
       .filter((r) => r.kind === "refund" && r.paid_from === "cash")
       .forEach((r) => addAdv(r.return_date, -Number(r.amount)));
-    const keys = [...col.keys(), ...tr.keys(), ...ex.keys(), ...adv.keys()].sort();
+    const ut = inMonth(bills.map((b) => ({ d: b.deposit_date, amount: b.amount })));
+    const utCash = inMonth(
+      bills.filter((b) => b.paid_from !== "bank").map((b) => ({ d: b.deposit_date, amount: b.amount })),
+    );
+    const keys = [...col.keys(), ...tr.keys(), ...ex.keys(), ...adv.keys(), ...ut.keys()].sort();
     if (!keys.length) return [];
     const rows: MonthRow[] = [];
     let opening = 0;
@@ -190,7 +222,8 @@ export default function IncomePage() {
       const bankM = tr.get(k) ?? 0;
       const spentM = ex.get(k) ?? 0;
       const advM = adv.get(k) ?? 0;
-      const closing = opening + collectedM - bankM - spentM + advM;
+      const closing =
+        opening + collectedM - bankM - (exCash.get(k) ?? 0) - (utCash.get(k) ?? 0) + advM;
       rows.push({
         key: k,
         month: m.format("MMMM YYYY"),
@@ -198,6 +231,7 @@ export default function IncomePage() {
         collected: collectedM,
         bank: bankM,
         spent: spentM,
+        utilities: ut.get(k) ?? 0,
         advance: advM,
         closing,
       });
@@ -277,10 +311,11 @@ export default function IncomePage() {
                   { label: "Rent collected", value: `+${fmt(m.collected)}`, color: "#16a34a" },
                   { label: "Sent to bank", value: `-${fmt(m.bank)}` },
                   { label: "Expenses", value: `-${fmt(m.spent)}`, color: "#e11d48" },
+                  { label: "Utilities", value: `-${fmt(m.utilities)}`, color: "#e11d48" },
                   {
-                    label: "Net income",
-                    value: fmt(m.collected - m.spent),
-                    color: m.collected - m.spent >= 0 ? "#16a34a" : "#e11d48",
+                    label: "Net profit",
+                    value: fmt(m.collected - m.spent - m.utilities),
+                    color: m.collected - m.spent - m.utilities >= 0 ? "#16a34a" : "#e11d48",
                   },
                   ...(hasAdvance
                     ? [{ label: "Advance", value: `${m.advance >= 0 ? "+" : "-"}${fmt(Math.abs(m.advance))}` }]
@@ -332,11 +367,17 @@ export default function IncomePage() {
                 render: (v: number) => <span style={{ color: "#e11d48", fontWeight: 700 }}>-{fmt(v)}</span>,
               },
               {
-                title: "Net income",
+                title: "Utilities",
+                dataIndex: "utilities",
+                align: "right",
+                render: (v: number) => <span style={{ color: "#e11d48", fontWeight: 700 }}>-{fmt(v)}</span>,
+              },
+              {
+                title: "Net profit",
                 align: "right",
                 render: (_, m) => (
-                  <b style={{ color: m.collected - m.spent >= 0 ? "#16a34a" : "#e11d48" }}>
-                    {fmt(m.collected - m.spent)}
+                  <b style={{ color: m.collected - m.spent - m.utilities >= 0 ? "#16a34a" : "#e11d48" }}>
+                    {fmt(m.collected - m.spent - m.utilities)}
                   </b>
                 ),
               },
@@ -592,12 +633,12 @@ export default function IncomePage() {
             <b>{fmt(collected)}</b>
           </div>
           <div className="hero-mini">
-            <span>Expenses</span>
-            <b>- {fmt(spent)}</b>
+            <span>Expenses + utilities</span>
+            <b>- {fmt(spent + utilitiesTotal)}</b>
           </div>
           <div className="hero-mini">
-            <span>Net income</span>
-            <b>{fmt(collected - spent)}</b>
+            <span>Net profit</span>
+            <b>{fmt(collected - spent - utilitiesTotal)}</b>
           </div>
           <div className="hero-mini">
             <span>In bank</span>

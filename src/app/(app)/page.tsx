@@ -122,8 +122,8 @@ export default function DashboardPage() {
   const [units, setUnits] = useState<Unit[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [transfers, setTransfers] = useState<Dated[]>([]);
-  const [expenses, setExpenses] = useState<Dated[]>([]);
-  const [utilities, setUtilities] = useState<Dated[]>([]);
+  const [expenses, setExpenses] = useState<(Dated & { src: string })[]>([]);
+  const [utilities, setUtilities] = useState<(Dated & { src: string })[]>([]);
   const [moves, setMoves] = useState<(Dated & { dest: string })[]>([]);
   const [cashRefunds, setCashRefunds] = useState<Dated[]>([]);
 
@@ -150,10 +150,14 @@ export default function DashboardPage() {
         supabase.from("bank_transfers").select("amount, transfer_date").order("id").range(lo, hi),
       ),
       fetchAll((lo, hi) =>
-        supabase.from("expenses").select("amount, expense_date").order("id").range(lo, hi),
+        supabase.from("expenses").select("amount, expense_date, paid_from").order("id").range(lo, hi),
       ),
       fetchAll((lo, hi) =>
-        supabase.from("electricity_deposits").select("amount, deposit_date").order("id").range(lo, hi),
+        supabase
+          .from("electricity_deposits")
+          .select("amount, deposit_date, paid_from")
+          .order("id")
+          .range(lo, hi),
       ),
       fetchAll((lo, hi) =>
         supabase
@@ -178,8 +182,12 @@ export default function DashboardPage() {
       setUnits(rooms.data ?? []);
       setPayments(pays.data ?? []);
       setTransfers((tr.data ?? []).map((r) => ({ date: r.transfer_date, amount: r.amount })));
-      setExpenses((ex.data ?? []).map((r) => ({ date: r.expense_date, amount: r.amount })));
-      setUtilities((ut.data ?? []).map((r) => ({ date: r.deposit_date, amount: r.amount })));
+      setExpenses(
+        (ex.data ?? []).map((r) => ({ date: r.expense_date, amount: r.amount, src: r.paid_from })),
+      );
+      setUtilities(
+        (ut.data ?? []).map((r) => ({ date: r.deposit_date, amount: r.amount, src: r.paid_from })),
+      );
       setMoves((mv.data ?? []).map((r) => ({ date: r.move_date, amount: r.amount, dest: r.destination })));
       setCashRefunds((rf.data ?? []).map((r) => ({ date: r.return_date, amount: r.amount })));
       setLoaded(true);
@@ -212,7 +220,8 @@ export default function DashboardPage() {
     return (
       payments.filter((p) => ok(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
       sum(transfers.filter((t) => ok(t.date))) -
-      sum(expenses.filter((e) => ok(e.date))) +
+      sum(expenses.filter((e) => e.src !== "bank" && ok(e.date))) -
+      sum(utilities.filter((u) => u.src !== "bank" && ok(u.date))) +
       // Advance only joins cash or the bank once it is moved; a refund paid out of cash takes it out.
       sum(moves.filter((m) => m.dest === "cash" && ok(m.date))) -
       sum(cashRefunds.filter((r) => ok(r.date)))
@@ -222,14 +231,17 @@ export default function DashboardPage() {
     const ok = (d: string) => !dayjs(d).isAfter(end);
     return (
       sum(transfers.filter((t) => ok(t.date))) +
-      sum(moves.filter((m) => m.dest === "bank" && ok(m.date)))
+      sum(moves.filter((m) => m.dest === "bank" && ok(m.date))) -
+      sum(expenses.filter((e) => e.src === "bank" && ok(e.date))) -
+      sum(utilities.filter((u) => u.src === "bank" && ok(u.date)))
     );
   };
   const netAt = (end: Dayjs) => {
     const ok = (d: string) => !dayjs(d).isAfter(end);
     return (
       payments.filter((p) => ok(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
-      sum(expenses.filter((e) => ok(e.date)))
+      sum(expenses.filter((e) => ok(e.date))) -
+      sum(utilities.filter((u) => ok(u.date)))
     );
   };
   const monthEnd = month.endOf("month");
@@ -244,7 +256,11 @@ export default function DashboardPage() {
   // Money movements inside the selected month.
   const collectedM = payments.filter((p) => inMonth(p.paid_at)).reduce((s, p) => s + rentOf(p), 0);
   const expensesM = sum(expenses.filter((e) => inMonth(e.date)));
+  const expensesCashM = sum(expenses.filter((e) => e.src !== "bank" && inMonth(e.date)));
+  const expensesBankM = sum(expenses.filter((e) => e.src === "bank" && inMonth(e.date)));
   const utilitiesM = sum(utilities.filter((u) => inMonth(u.date)));
+  const utilitiesCashM = sum(utilities.filter((u) => u.src !== "bank" && inMonth(u.date)));
+  const utilitiesBankM = sum(utilities.filter((u) => u.src === "bank" && inMonth(u.date)));
   const bankM = sum(transfers.filter((t) => inMonth(t.date)));
   const advCashM =
     sum(moves.filter((m) => m.dest === "cash" && inMonth(m.date))) -
@@ -299,7 +315,7 @@ export default function DashboardPage() {
           </div>
           <div className="hero-mini">
             <span>Net profit in {month.format("MMM")}</span>
-            <b>{fmt(collectedM - expensesM)}</b>
+            <b>{fmt(collectedM - expensesM - utilitiesM)}</b>
           </div>
           <div className="hero-mini">
             <span>Total net profit</span>
@@ -308,7 +324,7 @@ export default function DashboardPage() {
         </div>
       </div>
       <p style={{ color: "#64748b", fontSize: 15, margin: "8px 4px 0" }}>
-        Net profit = rent received - expenses. Advance held ({fmt(advance)}) is the tenants&apos; security
+        Net profit = rent received - (expenses + utilities). Advance held ({fmt(advance)}) is the tenants&apos; security
         money and is not counted as yours until you move it.
       </p>
 
@@ -335,7 +351,8 @@ export default function DashboardPage() {
         <Card className="soft-card" title="Cash on hand" loading={loading}>
           <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingCash)} />
           <FlowRow label="Rent received" value={`+ ${fmt(collectedM)}`} color="#16a34a" />
-          <FlowRow label="Expenses" value={`- ${fmt(expensesM)}`} color="#e11d48" />
+          <FlowRow label="Expenses paid from cash" value={`- ${fmt(expensesCashM)}`} color="#e11d48" />
+          <FlowRow label="Utilities paid from cash" value={`- ${fmt(utilitiesCashM)}`} color="#e11d48" />
           <FlowRow label="Sent to bank" value={`- ${fmt(bankM)}`} />
           {advCashM !== 0 && (
             <FlowRow
@@ -353,6 +370,12 @@ export default function DashboardPage() {
           <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingBank)} />
           <FlowRow label="Sent from cash" value={`+ ${fmt(bankM)}`} color="#4f46e5" />
           {advBankM > 0 && <FlowRow label="Advance moved to bank" value={`+ ${fmt(advBankM)}`} />}
+          {expensesBankM > 0 && (
+            <FlowRow label="Expenses paid from bank" value={`- ${fmt(expensesBankM)}`} color="#e11d48" />
+          )}
+          {utilitiesBankM > 0 && (
+            <FlowRow label="Utilities paid from bank" value={`- ${fmt(utilitiesBankM)}`} color="#e11d48" />
+          )}
           <FlowRow strong label={`In bank (end of ${month.format("MMM")})`} value={fmt(inBank)} />
         </Card>
       </div>
@@ -374,16 +397,16 @@ export default function DashboardPage() {
           },
           { label: "Expenses", value: expensesM, color: "#e11d48" },
           {
-            label: "Net income (received - expenses)",
-            value: collectedM - expensesM,
-            color: collectedM - expensesM >= 0 ? "#16a34a" : "#e11d48",
+            label: "Net profit (received - expenses - utilities)",
+            value: collectedM - expensesM - utilitiesM,
+            color: collectedM - expensesM - utilitiesM >= 0 ? "#16a34a" : "#e11d48",
           },
-          { label: "Utilities", value: utilitiesM, color: "#0f172a" },
+          { label: "Utilities", value: utilitiesM, color: "#e11d48" },
           { label: "Advance held (tenants' money)", value: advance, color: "#0f172a" },
           { label: "Sent to bank", value: bankM, color: "#4f46e5" },
           { label: "Total money (cash + bank)", value: cash + inBank, color: "#0f172a" },
           {
-            label: "Net income to date (all months)",
+            label: "Net profit to date (all months)",
             value: netToDate,
             color: netToDate >= 0 ? "#16a34a" : "#e11d48",
           },

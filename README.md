@@ -9,13 +9,15 @@ Rent tracker for rooms and shops. Add rooms and shops with their rent and advanc
 - **Rooms & Shops:** add, edit rent and advance, delete. "Use / return advance" deducts the advance from the last rent (rooms) or gives it back (shops)
 - **Rent:** monthly Paid / Due table with a filter for rooms or shops. Every month starts as Due. Clicking Paid saves the date and who marked it
 - **Income:** total collected, expenses, cash on hand and in bank. Transfer to bank deducts from cash. Monthly summary carries cash forward month to month
-- **Expenses:** add what you spent and what it was for. It comes out of cash on hand
+- **Expenses:** add what you spent and what it was for, and choose whether it was paid from cash on hand or from the bank
 - **Utilities:** record any bill you pay for the building (electricity, gas, water, internet, garbage, maintenance or anything else). You type the bill type, the meter and holding number, pick the rooms and shops it covers, then add the amount, date and an invoice image. Bills can be filtered and totalled by type
 - Responsive, with a full-screen hamburger menu on mobile
 
 ## How the money is counted
 
-- **Cash on hand** = rent collected - bank transfers - expenses
+- **Cash on hand** = rent collected - bank transfers - expenses and utilities paid from cash
+- **In bank** = bank transfers - expenses and utilities paid from the bank
+- **Net profit** = rent collected - (expenses + utilities)
 - **Rent collected** = cash received + any part of the rent settled from the tenant's advance
 - **Advance** is security money held separately. It is not part of cash on hand
 - Returning an advance in cash does not change cash on hand
