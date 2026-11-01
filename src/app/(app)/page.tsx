@@ -301,10 +301,44 @@ export default function DashboardPage() {
 
       <div className="hero">
         <div className="hero-label">
-          Money you have {isCurrent ? "right now" : `at the end of ${month.format("MMMM YYYY")}`}
+          Total income {isCurrent ? "right now" : `at the end of ${month.format("MMMM YYYY")}`}
         </div>
         <div className="hero-amount">{loading ? "..." : fmt(cash + inBank)}</div>
-        <div className="hero-grid">
+        <div className="hero-label" style={{ marginBottom: 6 }}>
+          How it adds up in {month.format("MMMM")}
+        </div>
+        <div className="hero-grid three">
+          <div className="hero-mini">
+            <span>Brought forward from {prevName} (cash + bank)</span>
+            <b>{fmt(openingCash + openingBank)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>+ Rent received in {month.format("MMM")}</span>
+            <b>{fmt(collectedM)}</b>
+          </div>
+          <div className="hero-mini">
+            <span>- Expenses + utilities in {month.format("MMM")}</span>
+            <b>{fmt(expensesM + utilitiesM)}</b>
+          </div>
+        </div>
+        <div className="hero-grid" style={{ gridTemplateColumns: "1fr", marginTop: 8 }}>
+          <div className="hero-mini">
+            <span>Net income, all months so far (rent received - expenses - utilities)</span>
+            <b>{fmt(netToDate)}</b>
+          </div>
+        </div>
+        {advCashM + advBankM !== 0 && (
+          <div className="hero-grid" style={{ gridTemplateColumns: "1fr", marginTop: 8 }}>
+            <div className="hero-mini">
+              <span>+ Advance moved in / refunded in {month.format("MMM")}</span>
+              <b>{fmt(advCashM + advBankM)}</b>
+            </div>
+          </div>
+        )}
+        <div className="hero-label" style={{ margin: "16px 0 6px" }}>
+          Where the money is
+        </div>
+        <div className="hero-grid two">
           <div className="hero-mini">
             <span>Cash on hand</span>
             <b>{fmt(cash)}</b>
@@ -313,19 +347,14 @@ export default function DashboardPage() {
             <span>In bank</span>
             <b>{fmt(inBank)}</b>
           </div>
-          <div className="hero-mini">
-            <span>Net profit in {month.format("MMM")}</span>
-            <b>{fmt(collectedM - expensesM - utilitiesM)}</b>
-          </div>
-          <div className="hero-mini">
-            <span>Total net profit</span>
-            <b>{fmt(netToDate)}</b>
-          </div>
         </div>
       </div>
       <p style={{ color: "#64748b", fontSize: 15, margin: "8px 4px 0" }}>
-        Net profit = rent received - (expenses + utilities). Advance held ({fmt(advance)}) is the tenants&apos; security
-        money and is not counted as yours until you move it.
+        Net profit = rent received - (expenses + utilities).
+        <br />
+        Total income = what you brought from {prevName} (cash + bank) + rent received in{" "}
+        {month.format("MMM")} - (expenses + utilities). Advance held ({fmt(advance)}) is the
+        tenants&apos; security money and is not counted as yours until you move it.
       </p>
 
       <div className="quick-actions">

@@ -545,3 +545,19 @@ body {
     grid-template-columns: repeat(2, 1fr);
   }
 }
+
+/* top card of the Dashboard: the month's sum on one row, where the money is on the next */
+.hero-grid.two {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+.hero-grid.three {
+  grid-template-columns: repeat(3, 1fr);
+  margin-top: 8px;
+}
+
+@media (max-width: 767px) {
+  .hero-grid.three {
+    grid-template-columns: 1fr;
+  }
+}
