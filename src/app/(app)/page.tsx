@@ -121,7 +121,7 @@ export default function DashboardPage() {
   const [loaded, setLoaded] = useState(false);
   const [units, setUnits] = useState<Unit[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
-  const [transfers, setTransfers] = useState<Dated[]>([]);
+  const [transfers, setTransfers] = useState<(Dated & { dir: string })[]>([]);
   const [expenses, setExpenses] = useState<(Dated & { src: string })[]>([]);
   const [utilities, setUtilities] = useState<(Dated & { src: string })[]>([]);
   const [moves, setMoves] = useState<(Dated & { dest: string })[]>([]);
@@ -147,7 +147,11 @@ export default function DashboardPage() {
           .range(lo, hi),
       ),
       fetchAll((lo, hi) =>
-        supabase.from("bank_transfers").select("amount, transfer_date").order("id").range(lo, hi),
+        supabase
+          .from("bank_transfers")
+          .select("amount, transfer_date, direction")
+          .order("id")
+          .range(lo, hi),
       ),
       fetchAll((lo, hi) =>
         supabase.from("expenses").select("amount, expense_date, paid_from").order("id").range(lo, hi),
@@ -181,7 +185,9 @@ export default function DashboardPage() {
       if (err) message.error(err.message);
       setUnits(rooms.data ?? []);
       setPayments(pays.data ?? []);
-      setTransfers((tr.data ?? []).map((r) => ({ date: r.transfer_date, amount: r.amount })));
+      setTransfers(
+        (tr.data ?? []).map((r) => ({ date: r.transfer_date, amount: r.amount, dir: r.direction })),
+      );
       setExpenses(
         (ex.data ?? []).map((r) => ({ date: r.expense_date, amount: r.amount, src: r.paid_from })),
       );
@@ -219,7 +225,8 @@ export default function DashboardPage() {
     const ok = (d: string) => !dayjs(d).isAfter(end);
     return (
       payments.filter((p) => ok(p.paid_at)).reduce((s, p) => s + rentOf(p), 0) -
-      sum(transfers.filter((t) => ok(t.date))) -
+      sum(transfers.filter((t) => t.dir !== "to_cash" && ok(t.date))) +
+      sum(transfers.filter((t) => t.dir === "to_cash" && ok(t.date))) -
       sum(expenses.filter((e) => e.src !== "bank" && ok(e.date))) -
       sum(utilities.filter((u) => u.src !== "bank" && ok(u.date))) +
       // Advance only joins cash or the bank once it is moved; a refund paid out of cash takes it out.
@@ -230,7 +237,8 @@ export default function DashboardPage() {
   const bankAt = (end: Dayjs) => {
     const ok = (d: string) => !dayjs(d).isAfter(end);
     return (
-      sum(transfers.filter((t) => ok(t.date))) +
+      sum(transfers.filter((t) => t.dir !== "to_cash" && ok(t.date))) -
+      sum(transfers.filter((t) => t.dir === "to_cash" && ok(t.date))) +
       sum(moves.filter((m) => m.dest === "bank" && ok(m.date))) -
       sum(expenses.filter((e) => e.src === "bank" && ok(e.date))) -
       sum(utilities.filter((u) => u.src === "bank" && ok(u.date)))
@@ -261,7 +269,8 @@ export default function DashboardPage() {
   const utilitiesM = sum(utilities.filter((u) => inMonth(u.date)));
   const utilitiesCashM = sum(utilities.filter((u) => u.src !== "bank" && inMonth(u.date)));
   const utilitiesBankM = sum(utilities.filter((u) => u.src === "bank" && inMonth(u.date)));
-  const bankM = sum(transfers.filter((t) => inMonth(t.date)));
+  const bankM = sum(transfers.filter((t) => t.dir !== "to_cash" && inMonth(t.date)));
+  const bankFromM = sum(transfers.filter((t) => t.dir === "to_cash" && inMonth(t.date)));
   const advCashM =
     sum(moves.filter((m) => m.dest === "cash" && inMonth(m.date))) -
     sum(cashRefunds.filter((r) => inMonth(r.date)));
@@ -383,6 +392,9 @@ export default function DashboardPage() {
           <FlowRow label="Expenses paid from cash" value={`- ${fmt(expensesCashM)}`} color="#e11d48" />
           <FlowRow label="Utilities paid from cash" value={`- ${fmt(utilitiesCashM)}`} color="#e11d48" />
           <FlowRow label="Sent to bank" value={`- ${fmt(bankM)}`} />
+          {bankFromM > 0 && (
+            <FlowRow label="Withdrawn from bank" value={`+ ${fmt(bankFromM)}`} color="#16a34a" />
+          )}
           {advCashM !== 0 && (
             <FlowRow
               label="Advance moved in / refunded"
@@ -398,6 +410,9 @@ export default function DashboardPage() {
         <Card className="soft-card" title="In bank" loading={loading}>
           <FlowRow label={`Brought forward from ${prevName}`} value={fmt(openingBank)} />
           <FlowRow label="Sent from cash" value={`+ ${fmt(bankM)}`} color="#4f46e5" />
+          {bankFromM > 0 && (
+            <FlowRow label="Withdrawn to cash" value={`- ${fmt(bankFromM)}`} color="#e11d48" />
+          )}
           {advBankM > 0 && <FlowRow label="Advance moved to bank" value={`+ ${fmt(advBankM)}`} />}
           {expensesBankM > 0 && (
             <FlowRow label="Expenses paid from bank" value={`- ${fmt(expensesBankM)}`} color="#e11d48" />

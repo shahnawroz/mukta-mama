@@ -15,8 +15,8 @@ Rent tracker for rooms and shops. Add rooms and shops with their rent and advanc
 
 ## How the money is counted
 
-- **Cash on hand** = rent collected - bank transfers - expenses and utilities paid from cash
-- **In bank** = bank transfers - expenses and utilities paid from the bank
+- **Cash on hand** = rent collected - cash sent to the bank + cash withdrawn from the bank - expenses and utilities paid from cash
+- **In bank** = cash sent to the bank - withdrawals - expenses and utilities paid from the bank
 - **Net profit** = rent collected - (expenses + utilities)
 - **Rent collected** = cash received + any part of the rent settled from the tenant's advance
 - **Advance** is security money held separately. It is not part of cash on hand

@@ -31,7 +31,13 @@ type Collection = {
   month: string;
   rooms: { kind: "room" | "shop"; room_number: string } | null;
 };
-type Transfer = { id: string; amount: number; transfer_date: string; note: string | null };
+type Transfer = {
+  id: string;
+  amount: number;
+  transfer_date: string;
+  note: string | null;
+  direction: "to_bank" | "to_cash";
+};
 type Expense = {
   id: string;
   amount: number;
@@ -87,6 +93,8 @@ export default function IncomePage() {
   const [bills, setBills] = useState<{ id: string; amount: number; deposit_date: string; paid_from: "cash" | "bank" }[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
+  // to_bank = cash goes into the bank, to_cash = money is withdrawn from the bank
+  const [dir, setDir] = useState<"to_bank" | "to_cash">("to_bank");
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm<TransferValues>();
 
@@ -105,7 +113,7 @@ export default function IncomePage() {
       fetchAll((lo, hi) =>
         supabase
           .from("bank_transfers")
-          .select("id, amount, transfer_date, note")
+          .select("id, amount, transfer_date, note, direction")
           .order("transfer_date", { ascending: false })
           .order("id")
           .range(lo, hi),
@@ -161,7 +169,12 @@ export default function IncomePage() {
   // Rent income = cash received + the part settled from the tenant's advance.
   const rentOf = (c: Collection) => Number(c.amount) + Number(c.advance_applied);
   const collected = collections.reduce((s, c) => s + rentOf(c), 0);
-  const toBank = transfers.reduce((s, t) => s + Number(t.amount), 0);
+  const toBank = transfers
+    .filter((t) => t.direction !== "to_cash")
+    .reduce((s, t) => s + Number(t.amount), 0);
+  const fromBank = transfers
+    .filter((t) => t.direction === "to_cash")
+    .reduce((s, t) => s + Number(t.amount), 0);
   const spent = expenses.reduce((s, e) => s + Number(e.amount), 0);
   const spentBank = expenses
     .filter((e) => e.paid_from === "bank")
@@ -179,8 +192,8 @@ export default function IncomePage() {
   const cashRefunds = returns
     .filter((r) => r.kind === "refund" && r.paid_from === "cash")
     .reduce((s, r) => s + Number(r.amount), 0);
-  const inBank = toBank + movedBank - spentBank - utilBank;
-  const cash = collected - toBank - spentCash - utilCash + movedCash - cashRefunds;
+  const inBank = toBank - fromBank + movedBank - spentBank - utilBank;
+  const cash = collected - toBank + fromBank - spentCash - utilCash + movedCash - cashRefunds;
 
   // Month-by-month cash book: opening + collected - to bank - expenses = closing, carried forward.
   const monthly = (() => {
@@ -193,7 +206,12 @@ export default function IncomePage() {
       return m;
     };
     const col = inMonth(collections.map((c) => ({ d: c.paid_at, amount: rentOf(c) })));
-    const tr = inMonth(transfers.map((t) => ({ d: t.transfer_date, amount: t.amount })));
+    const tr = inMonth(
+      transfers.map((t) => ({
+        d: t.transfer_date,
+        amount: t.direction === "to_cash" ? -Number(t.amount) : Number(t.amount),
+      })),
+    );
     const ex = inMonth(expenses.map((e) => ({ d: e.expense_date, amount: e.amount })));
     const exCash = inMonth(
       expenses.filter((e) => e.paid_from !== "bank").map((e) => ({ d: e.expense_date, amount: e.amount })),
@@ -246,12 +264,17 @@ export default function IncomePage() {
       .from("bank_transfers")
       .insert({
         amount: values.amount,
+        direction: dir,
         transfer_date: values.transfer_date.format("YYYY-MM-DD"),
         note: values.note?.trim() || null,
       });
     setSaving(false);
     if (error) return message.error(error.message);
-    message.success(`${fmt(values.amount)} transferred to bank`);
+    message.success(
+      dir === "to_bank"
+        ? `${fmt(values.amount)} transferred to bank`
+        : `${fmt(values.amount)} withdrawn from bank to cash`,
+    );
     setOpen(false);
     form.resetFields();
     load();
@@ -260,7 +283,7 @@ export default function IncomePage() {
   async function removeTransfer(id: string) {
     const { error } = await createClient().from("bank_transfers").delete().eq("id", id);
     if (error) return message.error(error.message);
-    message.success("Transfer deleted, cash restored");
+    message.success("Transfer deleted");
     load();
   }
 
@@ -309,7 +332,7 @@ export default function IncomePage() {
                 {[
                   { label: "Opening cash", value: fmt(m.opening) },
                   { label: "Rent collected", value: `+${fmt(m.collected)}`, color: "#16a34a" },
-                  { label: "Sent to bank", value: `-${fmt(m.bank)}` },
+                  { label: "Bank (net)", value: `${m.bank >= 0 ? "-" : "+"}${fmt(Math.abs(m.bank))}` },
                   { label: "Expenses", value: `-${fmt(m.spent)}`, color: "#e11d48" },
                   { label: "Utilities", value: `-${fmt(m.utilities)}`, color: "#e11d48" },
                   {
@@ -359,7 +382,12 @@ export default function IncomePage() {
                 align: "right",
                 render: (v: number) => <span style={{ color: "#16a34a", fontWeight: 700 }}>+{fmt(v)}</span>,
               },
-              { title: "Sent to bank", dataIndex: "bank", align: "right", render: (v: number) => `-${fmt(v)}` },
+              {
+                title: "Bank (net)",
+                dataIndex: "bank",
+                align: "right",
+                render: (v: number) => `${v >= 0 ? "-" : "+"}${fmt(Math.abs(v))}`,
+              },
               {
                 title: "Expenses",
                 dataIndex: "spent",
@@ -487,11 +515,11 @@ export default function IncomePage() {
             items={transfers.map((t) => ({
               key: t.id,
               title: dayjs(t.transfer_date).format("DD MMM YYYY"),
-              sub: t.note ?? "Transfer to bank",
+              sub: `${t.direction === "to_cash" ? "Withdrawn from bank" : "Sent to bank"}${t.note ? ` - ${t.note}` : ""}`,
               amount: fmt(t.amount),
               actions: (
                 <Popconfirm
-                  title="Delete this transfer? The amount goes back to cash."
+                  title="Delete this transfer? Cash and bank go back as they were."
                   onConfirm={() => removeTransfer(t.id)}
                 >
                   <Button type="text" danger icon={<DeleteOutlined />} />
@@ -513,6 +541,16 @@ export default function IncomePage() {
                 sorter: (x, y) => x.transfer_date.localeCompare(y.transfer_date),
                 render: (v: string) => dayjs(v).format("DD MMM YYYY"),
               },
+              {
+                title: "Type",
+                dataIndex: "direction",
+                width: 160,
+                render: (v: "to_bank" | "to_cash") => (
+                  <Tag color={v === "to_cash" ? "green" : "geekblue"} style={{ margin: 0 }}>
+                    {v === "to_cash" ? "Bank to cash" : "Cash to bank"}
+                  </Tag>
+                ),
+              },
               { title: "Note", dataIndex: "note", render: (v: string | null) => v ?? "-" },
               {
                 title: "Amount",
@@ -527,7 +565,7 @@ export default function IncomePage() {
                 width: 80,
                 render: (_, t) => (
                   <Popconfirm
-                    title="Delete this transfer? The amount goes back to cash."
+                    title="Delete this transfer? Cash and bank go back as they were."
                     onConfirm={() => removeTransfer(t.id)}
                   >
                     <Button type="text" danger icon={<DeleteOutlined />} />
@@ -600,8 +638,10 @@ export default function IncomePage() {
     { required: true, message: "Enter amount" },
     {
       validator: (_: unknown, v: number | undefined) =>
-        v != null && v > cash
-          ? Promise.reject(new Error("More than cash on hand"))
+        v != null && v > (dir === "to_bank" ? cash : inBank)
+          ? Promise.reject(
+              new Error(dir === "to_bank" ? "More than cash on hand" : "More than the bank balance"),
+            )
           : Promise.resolve(),
     },
   ];
@@ -612,15 +652,31 @@ export default function IncomePage() {
         title="Income"
         subtitle="Rent collected, cash on hand and bank transfers."
         extra={
-          <Button
-            type="primary"
-            size="large"
-            icon={<BankOutlined />}
-            disabled={cash <= 0}
-            onClick={() => setOpen(true)}
-          >
-            Transfer to bank
-          </Button>
+          <>
+            <Button
+              size="large"
+              icon={<BankOutlined />}
+              disabled={inBank <= 0}
+              onClick={() => {
+                setDir("to_cash");
+                setOpen(true);
+              }}
+            >
+              Withdraw from bank
+            </Button>
+            <Button
+              type="primary"
+              size="large"
+              icon={<BankOutlined />}
+              disabled={cash <= 0}
+              onClick={() => {
+                setDir("to_bank");
+                setOpen(true);
+              }}
+            >
+              Transfer to bank
+            </Button>
+          </>
         }
       />
 
@@ -670,16 +726,17 @@ export default function IncomePage() {
       </div>
 
       <Modal
-        title="Transfer to bank"
+        title={dir === "to_bank" ? "Transfer cash to bank" : "Withdraw from bank to cash"}
         open={open}
         onCancel={() => setOpen(false)}
         onOk={() => form.submit()}
-        okText="Transfer"
+        okText={dir === "to_bank" ? "Transfer" : "Withdraw"}
         confirmLoading={saving}
         centered
       >
         <p>
-          Cash on hand: <b>{fmt(cash)}</b>
+          {dir === "to_bank" ? "Cash on hand" : "Bank balance"}:{" "}
+          <b>{fmt(dir === "to_bank" ? cash : inBank)}</b>
         </p>
         <Form
           form={form}

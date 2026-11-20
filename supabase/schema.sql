@@ -189,3 +189,7 @@ alter table public.expenses add column if not exists paid_from text not null def
 -- Where a utility bill was paid from: cash on hand or the bank.
 alter table public.electricity_deposits add column if not exists paid_from text not null default 'cash'
   check (paid_from in ('cash', 'bank'));
+
+-- Direction of a bank transfer: cash into the bank, or a withdrawal from the bank back to cash.
+alter table public.bank_transfers add column if not exists direction text not null default 'to_bank'
+  check (direction in ('to_bank', 'to_cash'));
